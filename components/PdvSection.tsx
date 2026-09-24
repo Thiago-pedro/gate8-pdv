@@ -1,7 +1,8 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, Dimensions } from 'react-native';
 
 import { Loader } from '@/components/Loader';
 import { colors } from '@/constants/theme';
@@ -32,6 +33,7 @@ import {
   setCashlessStatus,
   setDeviceStatus,
   updateConvenience,
+  uploadProductImage,
   type PdvCard,
   type PdvCashierSession,
   type PdvConvenience,
@@ -44,11 +46,11 @@ import {
 type Tab = 'devices' | 'sales' | 'cashier' | 'items' | 'cashless';
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'devices', label: 'Maquininhas' },
-  { key: 'sales', label: 'Vendas POS' },
   { key: 'cashier', label: 'Caixas' },
-  { key: 'items', label: 'Meus itens' },
   { key: 'cashless', label: 'Cashless' },
+  { key: 'devices', label: 'Maquininhas' },
+  { key: 'items', label: 'Meus itens' },
+  { key: 'sales', label: 'Vendas POS' },
 ];
 
 export function PdvSection({
@@ -115,7 +117,7 @@ export function PdvSection({
   if (busy && !list) {
     return (
       <View style={styles.boot}>
-        <Loader size={148} />
+        <Loader screen />
       </View>
     );
   }
@@ -247,11 +249,16 @@ export function PdvSection({
         </Text>
       ) : (
         visible.map((item) => (
-          <View key={item.id} style={styles.card}>
-            <Text style={styles.name}>{item.name}</Text>
-            {item.merchantName ? <Text style={styles.meta}>{item.merchantName}</Text> : null}
-            {item.token ? <Text style={styles.tokenMini}>{item.token}</Text> : null}
-            <View style={styles.row}>
+          <View key={item.id} style={styles.listCard}>
+            <View style={styles.listCardInfo}>
+              <Text style={styles.name} numberOfLines={1}>
+                {item.name}
+              </Text>
+              <Text style={styles.meta} numberOfLines={1}>
+                {[item.merchantName, item.token].filter(Boolean).join(' · ')}
+              </Text>
+            </View>
+            <View style={styles.listCardActions}>
               {item.archived ? (
                 <>
                   <Pressable
@@ -264,24 +271,24 @@ export function PdvSection({
                         onToast(caught instanceof Error ? caught.message : 'Falha ao restaurar');
                       }
                     }}
-                    style={styles.ghostBtn}
+                    style={styles.listGhost}
                   >
-                    <Text style={styles.ghostText}>Restaurar</Text>
+                    <Text style={styles.listGhostText}>Restaurar</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => {
                       setDeleting(item);
                       setDeleteName('');
                     }}
-                    style={styles.ghostBtn}
+                    style={styles.listGhost}
                   >
-                    <Text style={[styles.ghostText, { color: colors.danger }]}>Excluir</Text>
+                    <Text style={[styles.listGhostText, { color: colors.danger }]}>Excluir</Text>
                   </Pressable>
                 </>
               ) : (
                 <>
-                  <Pressable onPress={() => setOpenId(item.id)} style={styles.primaryBtn}>
-                    <Text style={styles.primaryText}>Abrir</Text>
+                  <Pressable onPress={() => setOpenId(item.id)} style={styles.listPrimary}>
+                    <Text style={styles.listPrimaryText}>Abrir</Text>
                   </Pressable>
                   <Pressable
                     onPress={async () => {
@@ -293,9 +300,9 @@ export function PdvSection({
                         onToast(caught instanceof Error ? caught.message : 'Falha ao arquivar');
                       }
                     }}
-                    style={styles.ghostBtn}
+                    style={styles.listGhost}
                   >
-                    <Text style={styles.ghostText}>Arquivar</Text>
+                    <Text style={styles.listGhostText}>Arquivar</Text>
                   </Pressable>
                 </>
               )}
@@ -343,13 +350,13 @@ function PdvDetail({
 
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Token desta conveniência (use em cada maquininha)</Text>
-        <Pressable
-          onPress={() => convenience.token && onCopy(convenience.token, 'Copiado')}
-          style={styles.tokenBox}
-        >
-          <Text style={styles.token}>{convenience.token || '—'}</Text>
-        </Pressable>
-        <View style={styles.row}>
+        <View style={styles.tokenRow}>
+          <Pressable
+            onPress={() => convenience.token && onCopy(convenience.token, 'Copiado')}
+            style={styles.tokenBox}
+          >
+            <Text style={styles.token}>{convenience.token || '—'}</Text>
+          </Pressable>
           <Pressable
             onPress={() => convenience.token && onCopy(convenience.token, 'Copiado')}
             style={styles.ghostBtn}
@@ -419,7 +426,13 @@ function PdvDetail({
         </View>
       </View>
 
-      <View style={styles.subTabs}>
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        style={styles.subTabs}
+        contentContainerStyle={styles.subTabsInner}
+      >
         {TABS.map((item) => (
           <Pressable
             key={item.key}
@@ -431,7 +444,7 @@ function PdvDetail({
             </Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
 
       {tab === 'devices' ? (
         <DevicesPane convenienceId={convenience.id} nonce={nonce} onToast={onToast} />
@@ -747,7 +760,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
 
   return (
     <View style={styles.gap}>
-      <View style={styles.periodRow}>
+      <View style={styles.salesFilters}>
         {(
           [
             [24, '24h'],
@@ -776,7 +789,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
           <DateTimeField label="Até" value={customTo} onChange={setCustomTo} />
         </View>
       ) : null}
-      <View style={styles.chips}>
+      <View style={styles.salesFilters}>
         {[
           ['', 'Todos'],
           ['pix', 'Pix'],
@@ -795,7 +808,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
         ))}
       </View>
       {devices.length > 0 ? (
-        <View style={styles.chips}>
+        <View style={styles.salesFilters}>
           <Pressable onPress={() => setDeviceId('')} style={[styles.chip, !deviceId && styles.chipOn]}>
             <Text style={[styles.chipText, !deviceId && styles.chipTextOn]}>Todas as maquininhas</Text>
           </Pressable>
@@ -936,7 +949,7 @@ function CashierPane({ convenienceId, nonce }: { convenienceId: string; nonce: n
 
   return (
     <View style={styles.gap}>
-      <View style={styles.chips}>
+      <View style={styles.cashierFilters}>
         {(['all', 'open', 'closed'] as const).map((value) => (
           <Pressable
             key={value}
@@ -1004,6 +1017,8 @@ function ItemsPane({
   const [items, setItems] = useState<PdvProduct[]>([]);
   const [busy, setBusy] = useState(true);
   const [editing, setEditing] = useState<Partial<PdvProduct> | null>(null);
+  const [pendingImage, setPendingImage] = useState<{ uri: string; type: string } | null>(null);
+  const [savingItem, setSavingItem] = useState(false);
   const [stockItem, setStockItem] = useState<PdvProduct | null>(null);
   const [stockQty, setStockQty] = useState('');
   const [stockIn, setStockIn] = useState(true);
@@ -1023,22 +1038,55 @@ function ItemsPane({
     void load();
   }, [load, nonce]);
 
+  async function pickProductPhoto() {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        onToast('Permita o acesso às fotos para escolher a imagem.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
+        onToast('Imagem muito grande. Máx 5MB.');
+        return;
+      }
+      const type = asset.mimeType || 'image/jpeg';
+      setPendingImage({ uri: asset.uri, type });
+      setEditing((current) => ({ ...current, imageUrl: asset.uri }));
+    } catch (caught) {
+      onToast(caught instanceof Error ? caught.message : 'Não foi possível abrir as fotos.');
+    }
+  }
+
+  function openNewItem() {
+    setPendingImage(null);
+    setEditing({
+      name: '',
+      price: 0,
+      cost: 0,
+      active: true,
+      trackStock: false,
+      stock: 0,
+      minStock: 0,
+      imageUrl: null,
+    });
+  }
+
+  function closeItemModal() {
+    setEditing(null);
+    setPendingImage(null);
+  }
+
   return (
     <View style={styles.gap}>
-      <Pressable
-        onPress={() =>
-          setEditing({
-            name: '',
-            price: 0,
-            cost: 0,
-            active: true,
-            trackStock: false,
-            stock: 0,
-            minStock: 0,
-          })
-        }
-        style={styles.primaryBtn}
-      >
+      <Pressable onPress={openNewItem} style={styles.primaryBtn}>
         <Ionicons name="add" size={16} color={colors.loginText} />
         <Text style={styles.primaryText}>Novo item</Text>
       </Pressable>
@@ -1051,6 +1099,13 @@ function ItemsPane({
       ) : (
         items.map((item) => (
           <View key={item.id} style={styles.hit}>
+            {item.imageUrl ? (
+              <Image source={{ uri: item.imageUrl }} style={styles.productThumb} />
+            ) : (
+              <View style={styles.productThumbEmpty}>
+                <Ionicons name="image-outline" size={16} color={colors.muted} />
+              </View>
+            )}
             <View style={styles.hitInfo}>
               <Text style={styles.deviceName}>{item.name}</Text>
               <Text style={styles.meta}>
@@ -1068,7 +1123,10 @@ function ItemsPane({
                 <Text style={styles.linkText}>±</Text>
               </Pressable>
             ) : null}
-            <Pressable onPress={() => setEditing(item)}>
+            <Pressable onPress={() => {
+              setPendingImage(null);
+              setEditing(item);
+            }}>
               <Ionicons name="pencil" size={15} color={colors.blue} />
             </Pressable>
             <Pressable
@@ -1088,11 +1146,37 @@ function ItemsPane({
         ))
       )}
 
-      <Modal visible={!!editing} transparent animationType="fade" onRequestClose={() => setEditing(null)}>
-        <Pressable style={styles.modalBg} onPress={() => setEditing(null)}>
+      <Modal visible={!!editing} transparent animationType="fade" onRequestClose={closeItemModal}>
+        <Pressable style={styles.modalBg} onPress={closeItemModal}>
           <Pressable style={styles.modal} onPress={() => undefined}>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 10 }}>
             <Text style={styles.modalTitle}>{editing?.id ? 'Editar item' : 'Novo item'}</Text>
+            <Text style={styles.fieldLabel}>Foto do produto</Text>
+            <View style={styles.photoRow}>
+              {editing?.imageUrl ? (
+                <Image source={{ uri: editing.imageUrl }} style={styles.productPhoto} />
+              ) : (
+                <View style={styles.productPhotoEmpty}>
+                  <Ionicons name="image-outline" size={28} color={colors.muted} />
+                </View>
+              )}
+              <View style={styles.photoActions}>
+                <Pressable onPress={() => void pickProductPhoto()} style={styles.ghostBtn}>
+                  <Text style={styles.ghostText}>{editing?.imageUrl ? 'Trocar foto' : 'Escolher foto'}</Text>
+                </Pressable>
+                {editing?.imageUrl ? (
+                  <Pressable
+                    onPress={() => {
+                      setPendingImage(null);
+                      setEditing((current) => ({ ...current, imageUrl: null }));
+                    }}
+                    style={styles.ghostBtn}
+                  >
+                    <Text style={styles.ghostText}>Remover</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
             <TextInput
               value={editing?.name ?? ''}
               onChangeText={(value) => setEditing((current) => ({ ...current, name: value }))}
@@ -1114,32 +1198,36 @@ function ItemsPane({
               placeholderTextColor="rgba(255,255,255,0.32)"
               style={styles.input}
             />
+            <Text style={styles.fieldLabel}>Preço de venda (R$)</Text>
             <TextInput
-              value={editing ? String(editing.price ?? '') : ''}
+              value={editing && editing.price ? String(editing.price) : ''}
               onChangeText={(value) => setEditing((current) => ({ ...current, price: Number(value.replace(',', '.')) || 0 }))}
-              placeholder="Preço (R$)"
+              placeholder="0,00"
               keyboardType="decimal-pad"
               placeholderTextColor="rgba(255,255,255,0.32)"
               style={styles.input}
             />
+            <Text style={styles.fieldLabel}>Custo (R$)</Text>
             <TextInput
-              value={editing ? String(editing.cost ?? '') : ''}
+              value={editing && editing.cost ? String(editing.cost) : ''}
               onChangeText={(value) => setEditing((current) => ({ ...current, cost: Number(value.replace(',', '.')) || 0 }))}
-              placeholder="Custo (R$)"
+              placeholder="0,00"
               keyboardType="decimal-pad"
               placeholderTextColor="rgba(255,255,255,0.32)"
               style={styles.input}
             />
-            <View style={styles.rowBetween}>
-              <Text style={styles.meta}>Ativo</Text>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Ativo</Text>
+              <View style={styles.switchLine} />
               <Switch
                 value={editing?.active !== false}
                 onValueChange={(value) => setEditing((current) => ({ ...current, active: value }))}
                 trackColor={{ true: colors.blue }}
               />
             </View>
-            <View style={styles.rowBetween}>
-              <Text style={styles.meta}>Controlar estoque</Text>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Controlar estoque</Text>
+              <View style={styles.switchLine} />
               <Switch
                 value={!!editing?.trackStock}
                 onValueChange={(value) => setEditing((current) => ({ ...current, trackStock: value }))}
@@ -1148,18 +1236,20 @@ function ItemsPane({
             </View>
             {editing?.trackStock ? (
               <>
+                <Text style={styles.fieldLabel}>Estoque atual</Text>
                 <TextInput
                   value={String(editing.stock ?? 0)}
                   onChangeText={(value) => setEditing((current) => ({ ...current, stock: Number(value) || 0 }))}
-                  placeholder="Estoque atual"
+                  placeholder="0"
                   keyboardType="number-pad"
                   placeholderTextColor="rgba(255,255,255,0.32)"
                   style={styles.input}
                 />
+                <Text style={styles.fieldLabel}>Estoque mínimo (alerta de baixo)</Text>
                 <TextInput
                   value={String(editing.minStock ?? 0)}
                   onChangeText={(value) => setEditing((current) => ({ ...current, minStock: Number(value) || 0 }))}
-                  placeholder="Estoque mínimo"
+                  placeholder="0"
                   keyboardType="number-pad"
                   placeholderTextColor="rgba(255,255,255,0.32)"
                   style={styles.input}
@@ -1167,13 +1257,20 @@ function ItemsPane({
               </>
             ) : null}
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setEditing(null)} style={styles.ghostBtn}>
+              <Pressable onPress={closeItemModal} style={styles.ghostBtn}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
                 onPress={async () => {
-                  if (!editing?.name?.trim()) return;
+                  if (!editing?.name?.trim() || savingItem) return;
+                  setSavingItem(true);
                   try {
+                    let imageUrl = editing.imageUrl ?? '';
+                    if (pendingImage) {
+                      imageUrl = await uploadProductImage(pendingImage.uri, pendingImage.type);
+                    } else if (imageUrl.startsWith('file:')) {
+                      imageUrl = '';
+                    }
                     await saveProduct(convenienceId, {
                       id: editing.id,
                       name: editing.name,
@@ -1186,17 +1283,20 @@ function ItemsPane({
                       trackStock: !!editing.trackStock,
                       stock: editing.stock ?? 0,
                       minStock: editing.minStock ?? 0,
+                      imageUrl,
                     });
                     onToast('Item salvo');
-                    setEditing(null);
+                    closeItemModal();
                     await load();
                   } catch (caught) {
                     onToast(caught instanceof Error ? caught.message : 'Falha ao salvar');
+                  } finally {
+                    setSavingItem(false);
                   }
                 }}
-                style={styles.primaryBtn}
+                style={[styles.primaryBtn, savingItem && styles.off]}
               >
-                <Text style={styles.primaryText}>Salvar</Text>
+                <Text style={styles.primaryText}>{savingItem ? 'Salvando...' : 'Salvar'}</Text>
               </Pressable>
             </View>
             </ScrollView>
@@ -1563,15 +1663,61 @@ function CashlessPane({
 }
 
 const styles = StyleSheet.create({
-  boot: { minHeight: 220, alignItems: 'center', justifyContent: 'center' },
+  boot: {
+    flexGrow: 1,
+    minHeight: Dimensions.get('window').height - 180,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   miniBoot: { minHeight: 140, alignItems: 'center', justifyContent: 'center' },
   block: { marginTop: 18, gap: 10 },
   gap: { gap: 8 },
   hint: { color: colors.muted, fontSize: 13, lineHeight: 19 },
   group: { color: colors.text, fontSize: 13, fontWeight: '700' },
   name: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  meta: { color: colors.muted, fontSize: 12, marginTop: 3 },
+  meta: { color: colors.muted, fontSize: 12, marginTop: 2 },
   empty: { color: colors.muted, fontSize: 13 },
+  listCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  listCardInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  listCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
+  listPrimary: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: colors.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listPrimaryText: { color: colors.loginText, fontWeight: '700', fontSize: 13 },
+  listGhost: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listGhostText: { color: colors.text, fontWeight: '600', fontSize: 13 },
   card: {
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
@@ -1582,8 +1728,63 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 36,
+  },
+  switchLabel: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  switchLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+  },
   amountRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   fieldLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600' },
+  photoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  photoActions: {
+    flex: 1,
+    gap: 8,
+  },
+  productPhoto: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  productPhotoEmpty: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  productThumb: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  productThumbEmpty: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   input: {
     flex: 1,
     minHeight: 42,
@@ -1621,24 +1822,42 @@ const styles = StyleSheet.create({
   linkBtn: { paddingVertical: 4 },
   linkText: { color: colors.blue, fontWeight: '700', fontSize: 13 },
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  tokenRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
   tokenBox: {
     borderWidth: 1,
     borderColor: colors.blue,
     borderRadius: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: 'rgba(0,123,255,0.08)',
+    flexShrink: 0,
   },
-  token: { color: colors.blue, fontSize: 22, fontWeight: '800', letterSpacing: 3 },
+  token: { color: colors.blue, fontSize: 16, fontWeight: '800', letterSpacing: 2 },
   tokenMini: { color: colors.blue, fontSize: 13, fontWeight: '700', letterSpacing: 1 },
-  subTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  subTabs: {
+    flexGrow: 0,
+    marginHorizontal: -16,
+  },
+  subTabsInner: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 16,
+  },
   subTab: {
-    paddingHorizontal: 10,
-    height: 32,
+    paddingHorizontal: 12,
+    height: 36,
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   subTabOn: { backgroundColor: colors.blue },
   subTabText: { color: colors.muted, fontSize: 11, fontWeight: '700' },
@@ -1670,6 +1889,19 @@ const styles = StyleSheet.create({
   badgeOff: { color: colors.muted, backgroundColor: 'rgba(255,255,255,0.08)' },
   badgeDanger: { color: colors.danger, backgroundColor: 'rgba(255,92,122,0.15)' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  cashierFilters: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  salesFilters: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
   periodRow: { flexDirection: 'row', flexWrap: 'nowrap', alignItems: 'center', gap: 6 },
   periodChip: { flexShrink: 1 },
   chip: {

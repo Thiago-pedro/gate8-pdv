@@ -1,4 +1,8 @@
+import { getAccessToken, getAuthUser } from '@/lib/auth';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/lib/config';
 import { callServerFn } from '@/lib/server-fn';
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 const FN = {
   conveniences: 'd82ee90b8b50396bc17e4c3c69aacf5f8fe36c27d3e5fdbbcedc540a9c6f4540',
@@ -93,6 +97,7 @@ export type PdvProduct = {
   stock: number;
   minStock: number;
   description: string | null;
+  imageUrl: string | null;
   convenienceId: string | null;
 };
 
@@ -367,6 +372,7 @@ export async function fetchProducts(convenienceId: string): Promise<PdvProduct[]
       stock: num(row.stock_quantity),
       minStock: num(row.min_stock),
       description: row.description ? text(row.description) : null,
+      imageUrl: row.image_url ? text(row.image_url) : null,
       convenienceId: row.convenience_id ? text(row.convenience_id) : null,
     }))
     .filter((item) => item.convenienceId === convenienceId);
@@ -386,6 +392,7 @@ export async function saveProduct(
     trackStock: boolean;
     stock: number;
     minStock: number;
+    imageUrl?: string | null;
   }
 ) {
   await callServerFn(FN.saveProduct, {
@@ -402,8 +409,43 @@ export async function saveProduct(
     track_stock: product.trackStock,
     stock_quantity: product.trackStock ? product.stock : 0,
     min_stock: product.trackStock ? product.minStock : 0,
-    image_url: '',
+    image_url: product.imageUrl?.trim() || '',
   });
+}
+
+export async function uploadProductImage(uri: string, contentType: string) {
+  if (!contentType.startsWith('image/')) throw new Error('O arquivo precisa ser uma imagem.');
+  const user = await getAuthUser();
+  if (!user?.id) throw new Error('Sessão expirada. Entre novamente.');
+  const token = await getAccessToken();
+  if (!token) throw new Error('Faça login para continuar.');
+  const file = await fetch(uri);
+  const blob = await file.blob();
+  if (blob.size > MAX_IMAGE_BYTES) throw new Error('Imagem muito grande. Máx 5MB.');
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const path = `${user.id}/pdv-products/${crypto.randomUUID()}.${ext}`;
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/event-banners/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': contentType || blob.type || 'image/jpeg',
+      'x-upsert': 'false',
+    },
+    body: blob,
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    let message = 'Falha ao enviar a foto do produto.';
+    try {
+      const parsed = JSON.parse(raw) as { message?: string; error?: string };
+      message = parsed.message || parsed.error || message;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(message);
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/event-banners/${path}`;
 }
 
 export async function deleteProduct(id: string) {

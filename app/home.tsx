@@ -3,7 +3,7 @@ import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Loader } from '@/components/Loader';
@@ -70,7 +70,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
-        <Wordmark height={28} />
+        <Wordmark height={36} />
         <Pressable
           onPress={() => setLeaveOpen(true)}
           hitSlop={12}
@@ -149,23 +149,26 @@ const styles = StyleSheet.create({
   },
   boot: {
     flex: 1,
+    minHeight: Dimensions.get('window').height,
+    width: '100%',
     backgroundColor: colors.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   header: {
-    height: 36,
+    height: 52,
     marginHorizontal: 16,
     marginTop: 8,
+    paddingTop: 12,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     position: 'relative',
   },
   exitBtn: {
     position: 'absolute',
     right: 0,
-    top: 0,
-    bottom: 0,
+    top: 12,
+    height: 36,
     justifyContent: 'center',
     paddingLeft: 8,
   },
