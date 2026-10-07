@@ -422,9 +422,28 @@ function firstNum(row: Row, keys: string[]) {
   return null;
 }
 
+function feeSource(row: Row) {
+  let snapshot: unknown = row.fee_snapshot ?? row.fees ?? row.fee;
+  if (typeof snapshot === 'string') {
+    try {
+      snapshot = JSON.parse(snapshot) as unknown;
+    } catch {
+      snapshot = null;
+    }
+  }
+  const object = asObject(snapshot);
+  const method = text(row.method ?? row.payment_method);
+  const nested = object ? asObject(object[method]) ?? asObject(object.applied) : null;
+  return { ...(object ?? {}), ...(nested ?? {}), ...row, ...(object ?? {}), ...(nested ?? {}) };
+}
+
+function asPercent(value: number | null) {
+  if (value == null) return null;
+  return value > 0 && value <= 1 ? value * 100 : value;
+}
+
 function readFee(row: Row, gross: number | null): PdvFee | null {
-  const snapshot = asObject(row.fee_snapshot) ?? asObject(row.fees);
-  const source = snapshot ?? row;
+  const source = feeSource(row);
   const bank = firstNum(source, ['bank_amount', 'bank_fee', 'bank_fee_amount', 'bank_total']);
   const gate8 = firstNum(source, ['gate8_amount', 'gate8_fee', 'gate8_fee_amount', 'service_fee', 'platform_fee', 'gate8_total']);
   let amount =
@@ -433,8 +452,15 @@ function readFee(row: Row, gross: number | null): PdvFee | null {
       : firstNum(source, ['fee_amount', 'fee_total', 'total_fee', 'fee']);
   const feeCents = firstNum(source, ['fee_cents', 'fee_amount_cents']);
   if (amount == null && feeCents != null) amount = feeCents / 100;
-  const rawPercent = firstNum(source, ['fee_percent', 'percent', 'rate', 'fee_rate', 'applied_percent']);
-  const percent = rawPercent == null ? null : rawPercent > 0 && rawPercent <= 1 ? rawPercent * 100 : rawPercent;
+  const bankPercent = asPercent(firstNum(source, ['bank_percent', 'bank_fee_percent', 'bank_rate']));
+  const gate8Percent = asPercent(
+    firstNum(source, ['gate8_percent', 'gate8_fee_percent', 'service_percent', 'platform_percent'])
+  );
+  const directPercent = asPercent(
+    firstNum(source, ['fee_percent', 'percent', 'rate', 'fee_rate', 'applied_percent', 'total_percent'])
+  );
+  const percent =
+    directPercent ?? (bankPercent != null || gate8Percent != null ? (bankPercent ?? 0) + (gate8Percent ?? 0) : null);
   const net = firstNum(source, ['net_amount', 'net_total']);
   if (amount == null && net != null && net > 0 && gross != null && gross + 0.001 >= net) {
     amount = gross - net;
@@ -455,6 +481,13 @@ export function saleFeeLabel(fee: PdvFee | null) {
   if (fee.percent == null) return `Taxa ${value}`;
   const rate = fee.percent.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
   return `Taxa ${rate}% · ${value}`;
+}
+
+export function saleFeePercentLabel(fee: PdvFee | null, method?: string) {
+  const percent = fee?.percent != null ? fee.percent : method === 'cash' ? 0 : null;
+  if (percent == null) return null;
+  const rate = percent.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  return `${rate}%`;
 }
 
 export function storedFeeTotal(sales: PdvSale[], saleCount: number) {

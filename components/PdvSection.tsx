@@ -14,7 +14,7 @@ import {
   PAYMENT_LABELS,
   paymentLabel,
   saleBadgeLabel,
-  saleFeeLabel,
+  saleFeePercentLabel,
   saleMatchesMethod,
   storedFeeTotal,
   archiveConvenience,
@@ -343,7 +343,7 @@ function PdvDetail({
   onToast: (message: string) => void;
   onReload: () => Promise<void>;
 }) {
-  const [tab, setTab] = useState<Tab>('devices');
+  const [tab, setTab] = useState<Tab>('sales');
   const [name, setName] = useState(convenience.name);
   const [savingName, setSavingName] = useState(false);
   const [regenOpen, setRegenOpen] = useState(false);
@@ -869,41 +869,55 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
               ))}
             </View>
           ) : null}
-          {paged.map((sale) => (
-            <View key={sale.id} style={styles.card}>
-              <View style={styles.rowBetween}>
-                <Text style={styles.name}>{formatBRL(sale.amount)}</Text>
-                <View style={styles.row}>
-                  <Text style={styles.badge}>{saleBadgeLabel(sale)}</Text>
+          {paged.map((sale) => {
+            const place = [sale.deviceName !== '—' ? sale.deviceName : '', sale.operator].filter(Boolean).join(' · ');
+            const detail = [sale.items.join(', '), `Aut. ${sale.authorization} · NSU ${sale.nsu}`]
+              .filter(Boolean)
+              .join(' · ');
+            const singleMethod = sale.payments.length === 1 ? sale.payments[0].method : sale.method;
+            const percentLabel =
+              sale.payments.length <= 1
+                ? saleFeePercentLabel(sale.fee ?? sale.payments[0]?.fee ?? null, singleMethod)
+                : null;
+            return (
+              <View key={sale.id} style={styles.saleCard}>
+                <View style={styles.rowBetween}>
+                  <Text style={styles.name}>{formatBRL(sale.amount)}</Text>
+                  <Text style={styles.saleDate}>{formatDateTime(sale.createdAt) || '—'}</Text>
+                </View>
+                <View style={styles.rowBetween}>
+                  <Text style={styles.saleLine} numberOfLines={1}>
+                    {saleBadgeLabel(sale)}
+                    {place ? ` · ${place}` : ''}
+                  </Text>
                   {sale.voided ? <Text style={[styles.badge, styles.badgeDanger]}>Estornada</Text> : null}
                 </View>
-              </View>
-              <Text style={styles.meta}>{formatDateTime(sale.createdAt) || '—'}</Text>
-              <Text style={styles.meta}>
-                Local {sale.deviceName}
-                {sale.operator ? ` · ${sale.operator}` : ''}
-              </Text>
-              {sale.payments.length > 0 ? (
-                sale.payments.map((part, index) => {
-                  const fee = saleFeeLabel(part.fee);
-                  return (
-                    <Text key={`${sale.id}-pay-${index}`} style={styles.meta}>
-                      {paymentLabel(part.method)} · {formatBRL(part.amount)}
-                      {part.nsu ? ` · NSU ${part.nsu}` : ''}
-                      {part.authorization ? ` · Aut. ${part.authorization}` : ''}
-                      {fee ? ` · ${fee}` : ''}
+                {sale.payments.length > 1
+                  ? sale.payments.map((part, index) => {
+                      const partPercent = saleFeePercentLabel(part.fee, part.method);
+                      return (
+                        <View key={`${sale.id}-pay-${index}`} style={styles.rowBetween}>
+                          <Text style={[styles.saleLine, styles.saleDetail]} numberOfLines={1}>
+                            {paymentLabel(part.method)} · {formatBRL(part.amount)}
+                            {part.authorization ? ` · Aut. ${part.authorization}` : ''}
+                            {part.nsu ? ` · NSU ${part.nsu}` : ''}
+                          </Text>
+                          {partPercent ? <Text style={styles.salePercent}>{partPercent}</Text> : null}
+                        </View>
+                      );
+                    })
+                  : null}
+                {detail || percentLabel ? (
+                  <View style={styles.saleFoot}>
+                    <Text style={[styles.saleLine, styles.saleDetail]} numberOfLines={2}>
+                      {detail}
                     </Text>
-                  );
-                })
-              ) : (
-                <Text style={styles.meta}>Aut. {sale.authorization} · NSU {sale.nsu}</Text>
-              )}
-              {sale.payments.length === 0 || sale.payments.some((part) => !part.fee) ? (
-                saleFeeLabel(sale.fee) ? <Text style={styles.meta}>{saleFeeLabel(sale.fee)}</Text> : null
-              ) : null}
-              {sale.items.length ? <Text style={styles.meta}>Itens {sale.items.join(', ')}</Text> : null}
-            </View>
-          ))}
+                    {percentLabel ? <Text style={styles.salePercent}>{percentLabel}</Text> : null}
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
           {filtered.length === 0 ? <Text style={styles.empty}>Nenhuma venda neste período.</Text> : null}
           {filtered.length > 8 ? (
             <View style={styles.rowBetween}>
@@ -1875,6 +1889,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   listGhostText: { color: colors.text, fontWeight: '600', fontSize: 13 },
+  saleCard: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 1,
+  },
+  saleDate: { color: colors.muted, fontSize: 12, fontWeight: '600' },
+  saleLine: { color: colors.muted, fontSize: 12, lineHeight: 16 },
+  saleDetail: { flex: 1 },
+  saleFoot: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', gap: 8 },
+  salePercent: { color: colors.muted, fontSize: 12, fontWeight: '700', lineHeight: 16 },
   card: {
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
