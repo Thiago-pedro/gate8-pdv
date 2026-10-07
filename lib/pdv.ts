@@ -1,5 +1,8 @@
+import * as SecureStore from 'expo-secure-store';
+
 import { getAccessToken, getAuthUser } from '@/lib/auth';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/lib/config';
+import { formatBRL } from '@/lib/format';
 import { callServerFn } from '@/lib/server-fn';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -46,6 +49,21 @@ export type PdvConvenience = {
   archived: boolean;
 };
 
+export type PdvFee = {
+  amount: number;
+  percent: number | null;
+};
+
+export type PdvSalePayment = {
+  method: string;
+  amount: number;
+  status: string;
+  nsu: string | null;
+  authorization: string | null;
+  brand: string | null;
+  fee: PdvFee | null;
+};
+
 export type PdvSale = {
   id: string;
   amount: number;
@@ -57,6 +75,8 @@ export type PdvSale = {
   authorization: string;
   nsu: string;
   items: string[];
+  payments: PdvSalePayment[];
+  fee: PdvFee | null;
   voided: boolean;
 };
 
@@ -145,6 +165,48 @@ function text(value: unknown) {
   return value == null ? '' : String(value);
 }
 
+function enabledFlag(value: unknown) {
+  if (value === true || value === 1 || value === 'true' || value === '1') return true;
+  if (value === false || value === 0 || value === 'false' || value === '0') return false;
+  return null;
+}
+
+function productImage(row: Row) {
+  const candidates = [
+    row.image_url,
+    row.imageUrl,
+    row.image,
+    row.photo_url,
+    row.photo,
+    row.picture_url,
+    row.thumbnail_url,
+    row.thumb_url,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    const nested = asObject(candidate);
+    const url = nested ? text(nested.url || nested.public_url || nested.src || nested.image_url).trim() : '';
+    if (url) return url;
+  }
+  return null;
+}
+
+function explicitTrack(row: Row) {
+  const flags = [row.track_stock, row.manage_stock, row.stock_control, row.track_inventory, row.manage_inventory].map(
+    enabledFlag
+  );
+  const decided = flags.filter((value): value is boolean => value != null);
+  if (decided.includes(true)) return true;
+  if (decided.includes(false)) return false;
+  return null;
+}
+
+function tracksStock(row: Row) {
+  const explicit = explicitTrack(row);
+  if (explicit != null) return explicit;
+  return num(row.stock_quantity) > 0;
+}
+
 function num(value: unknown) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -176,13 +238,84 @@ function mapDevice(row: Row): PdvDevice {
   };
 }
 
+const ARCHIVED_KEY = 'gate8.pdv.archivedConvenienceIds';
+const RESTORED_KEY = 'gate8.pdv.restoredConvenienceIds';
+const PRODUCT_OWNER_KEY = 'gate8.pdv.productOwners';
+const PRODUCT_POS_KEY = 'gate8.pdv.productPosPublished';
+function convenienceArchived(row: Row) {
+  const stamp = row.archived_at ?? row.archivedAt ?? row.pos_archived_at ?? row.archived_on;
+  if (typeof stamp === 'string' && stamp.trim()) return true;
+  if (enabledFlag(row.archived) === true || enabledFlag(row.is_archived) === true) return true;
+  return text(row.status).toLowerCase() === 'archived';
+}
+
+async function readIdSet(key: string) {
+  try {
+    const raw = await SecureStore.getItemAsync(key);
+    if (!raw) return new Set<string>();
+    const parsed = JSON.parse(raw) as unknown;
+    const ids = Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+    return new Set(ids);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function writeIdSet(key: string, ids: Set<string>) {
+  await SecureStore.setItemAsync(key, JSON.stringify([...ids]));
+}
+
+async function readOwners() {
+  try {
+    const raw = await SecureStore.getItemAsync(PRODUCT_OWNER_KEY);
+    if (!raw) return {} as Record<string, string>;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {} as Record<string, string>;
+    const owners: Record<string, string> = {};
+    for (const [id, convenienceId] of Object.entries(parsed)) {
+      if (typeof convenienceId === 'string' && convenienceId) owners[id] = convenienceId;
+    }
+    return owners;
+  } catch {
+    return {} as Record<string, string>;
+  }
+}
+
+async function rememberProductOwner(productId: string, convenienceId: string) {
+  if (!productId || !convenienceId) return;
+  const owners = await readOwners();
+  owners[productId] = convenienceId;
+  await SecureStore.setItemAsync(PRODUCT_OWNER_KEY, JSON.stringify(owners));
+}
+
+async function forgetProductOwner(productId: string) {
+  const owners = await readOwners();
+  if (!owners[productId]) return;
+  delete owners[productId];
+  await SecureStore.setItemAsync(PRODUCT_OWNER_KEY, JSON.stringify(owners));
+}
+
+async function rememberArchive(id: string, archived: boolean) {
+  const archivedIds = await readIdSet(ARCHIVED_KEY);
+  const restoredIds = await readIdSet(RESTORED_KEY);
+  if (archived) {
+    archivedIds.add(id);
+    restoredIds.delete(id);
+  } else {
+    archivedIds.delete(id);
+    restoredIds.add(id);
+  }
+  await writeIdSet(ARCHIVED_KEY, archivedIds);
+  await writeIdSet(RESTORED_KEY, restoredIds);
+}
+
 function mapConvenience(row: Row): PdvConvenience {
   return {
     id: text(row.id),
     name: text(row.name) || 'Conveniência',
     token: row.pos_token ? text(row.pos_token) : null,
     merchantName: row.pos_merchant_name ? text(row.pos_merchant_name) : null,
-    archived: Boolean(row.archived_at),
+    archived: convenienceArchived(row),
   };
 }
 
@@ -192,9 +325,24 @@ export function lastHoursRange(hours: number) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
+async function enableDisabledDevices(id: string) {
+  const devices = await fetchDevices(id);
+  await Promise.all(
+    devices
+      .filter((device) => device.status === 'disabled')
+      .map((device) => setDeviceStatus(device.id, 'active'))
+  );
+}
+
 export async function fetchConveniences(): Promise<PdvConvenience[]> {
-  const raw = await callServerFn<unknown>(FN.conveniences, {});
-  return asRows(pick(raw, 'conveniences')).map(mapConvenience).filter((item) => item.id);
+  const raw = await callServerFn<unknown>(FN.conveniences, { include_archived: true });
+  const rows = asRows(pick(raw, 'conveniences')).map(mapConvenience).filter((item) => item.id);
+  const archivedIds = await readIdSet(ARCHIVED_KEY);
+  const restoredIds = await readIdSet(RESTORED_KEY);
+  return rows.map((item) => ({
+    ...item,
+    archived: restoredIds.has(item.id) ? false : archivedIds.has(item.id) ? true : item.archived,
+  }));
 }
 
 export async function createConvenience(name: string, merchantName: string) {
@@ -209,11 +357,19 @@ export async function createConvenience(name: string, merchantName: string) {
 }
 
 export async function archiveConvenience(id: string, archived: boolean) {
-  await callServerFn(FN.archiveConv, { id, archived });
+  await rememberArchive(id, archived);
+  if (archived) return;
+  await enableDisabledDevices(id);
 }
 
 export async function deleteConvenience(id: string, name: string) {
-  await callServerFn(FN.deleteConv, { id, name });
+  await callServerFn(FN.deleteConv, { id, confirm_name: name });
+  const archivedIds = await readIdSet(ARCHIVED_KEY);
+  const restoredIds = await readIdSet(RESTORED_KEY);
+  archivedIds.delete(id);
+  restoredIds.delete(id);
+  await writeIdSet(ARCHIVED_KEY, archivedIds);
+  await writeIdSet(RESTORED_KEY, restoredIds);
 }
 
 export async function updateConvenience(id: string, patch: { name?: string; merchantName?: string | null }) {
@@ -252,11 +408,114 @@ function mapSaleItems(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function optionalNum(value: unknown): number | null {
+  if (value == null || value === '' || typeof value === 'object') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNum(row: Row, keys: string[]) {
+  for (const key of keys) {
+    const value = optionalNum(row[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function readFee(row: Row, gross: number | null): PdvFee | null {
+  const snapshot = asObject(row.fee_snapshot) ?? asObject(row.fees);
+  const source = snapshot ?? row;
+  const bank = firstNum(source, ['bank_amount', 'bank_fee', 'bank_fee_amount', 'bank_total']);
+  const gate8 = firstNum(source, ['gate8_amount', 'gate8_fee', 'gate8_fee_amount', 'service_fee', 'platform_fee', 'gate8_total']);
+  let amount =
+    bank != null || gate8 != null
+      ? (bank ?? 0) + (gate8 ?? 0)
+      : firstNum(source, ['fee_amount', 'fee_total', 'total_fee', 'fee']);
+  const feeCents = firstNum(source, ['fee_cents', 'fee_amount_cents']);
+  if (amount == null && feeCents != null) amount = feeCents / 100;
+  const rawPercent = firstNum(source, ['fee_percent', 'percent', 'rate', 'fee_rate', 'applied_percent']);
+  const percent = rawPercent == null ? null : rawPercent > 0 && rawPercent <= 1 ? rawPercent * 100 : rawPercent;
+  const net = firstNum(source, ['net_amount', 'net_total']);
+  if (amount == null && net != null && net > 0 && gross != null && gross + 0.001 >= net) {
+    amount = gross - net;
+  }
+  if (amount == null && percent != null && gross != null) {
+    amount = gross * (percent / 100);
+  }
+  if (amount == null && percent == null) return null;
+  return {
+    amount: Math.round((amount ?? 0) * 100) / 100,
+    percent,
+  };
+}
+
+export function saleFeeLabel(fee: PdvFee | null) {
+  if (!fee) return null;
+  const value = `- ${formatBRL(fee.amount)}`;
+  if (fee.percent == null) return `Taxa ${value}`;
+  const rate = fee.percent.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  return `Taxa ${rate}% · ${value}`;
+}
+
+export function storedFeeTotal(sales: PdvSale[], saleCount: number) {
+  if (sales.length < saleCount) return null;
+  const active = sales.filter((sale) => !sale.voided);
+  if (active.some((sale) => !sale.fee)) return null;
+  return Math.round(active.reduce((sum, sale) => sum + (sale.fee?.amount ?? 0), 0) * 100) / 100;
+}
+
+function mapPayments(value: unknown): PdvSalePayment[] {
+  let raw = value;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    const row = asObject(item);
+    if (!row) return [];
+    const method = text(row.method ?? row.payment_method).trim();
+    if (!method) return [];
+    const cents = num(row.amount_cents);
+    const amount = row.amount != null && row.amount !== '' ? num(row.amount) : cents / 100;
+    const nsu = text(row.nsu).trim();
+    const authorization = text(row.authorization ?? row.acquirer_authorization).trim();
+    const brand = text(row.brand).trim();
+    return [
+      {
+        method,
+        amount,
+        status: text(row.status).trim(),
+        nsu: nsu || null,
+        authorization: authorization || null,
+        brand: brand || null,
+        fee: readFee(row, amount),
+      },
+    ];
+  });
+}
+
 function mapSale(row: Row): PdvSale {
   const status = text(row.status).toLowerCase();
+  const amount = num(row.total_amount ?? row.amount ?? row.gross ?? row.total);
+  const payments = mapPayments(row.payments);
+  const ownFee = readFee(row, amount);
+  const partFees = payments.map((part) => part.fee).filter((fee): fee is PdvFee => fee != null);
+  const percents = [...new Set(partFees.map((fee) => fee.percent))];
+  const fee =
+    ownFee ??
+    (partFees.length === payments.length && partFees.length > 0
+      ? {
+          amount: Math.round(partFees.reduce((sum, part) => sum + part.amount, 0) * 100) / 100,
+          percent: percents.length === 1 ? percents[0] : null,
+        }
+      : null);
   return {
     id: text(row.id),
-    amount: num(row.total_amount ?? row.amount ?? row.gross ?? row.total),
+    amount,
     method: text(row.payment_method ?? row.method),
     status,
     createdAt: row.created_at ? text(row.created_at) : null,
@@ -269,8 +528,28 @@ function mapSale(row: Row): PdvSale {
     authorization: text(row.acquirer_authorization ?? row.stone_authorization) || '—',
     nsu: text(row.acquirer_nsu ?? row.stone_nsu) || '—',
     items: mapSaleItems(row.items ?? row.line_items),
+    payments,
+    fee,
     voided: ['voided', 'refunded', 'canceled', 'cancelled', 'reversed'].includes(status),
   };
+}
+
+export function paymentLabel(method: string) {
+  return PAYMENT_LABELS[method] ?? (method || 'Outro');
+}
+
+export function saleBadgeLabel(sale: Pick<PdvSale, 'method' | 'payments'>) {
+  const methods = [...new Set(sale.payments.map((part) => part.method).filter(Boolean))];
+  if (methods.length > 1) return 'Dividido';
+  if (methods.length === 1) return paymentLabel(methods[0]);
+  return paymentLabel(sale.method);
+}
+
+export function saleMatchesMethod(sale: Pick<PdvSale, 'method' | 'payments'>, method: string) {
+  if (!method) return true;
+  const keys = method === 'credit' ? ['credit', 'credit_card'] : [method];
+  if (sale.payments.length > 0) return sale.payments.some((part) => keys.includes(part.method));
+  return keys.includes(sale.method);
 }
 
 export async function fetchSales(input: {
@@ -357,45 +636,50 @@ export async function fetchCashierSessions(
   });
 }
 
-export async function fetchProducts(convenienceId: string): Promise<PdvProduct[]> {
-  const raw = await callServerFn<unknown>(FN.products, { mine: true });
-  return asRows(pick(raw, 'products'))
-    .map((row) => ({
-      id: text(row.id),
-      name: text(row.name) || 'Item',
-      category: row.category ? text(row.category) : null,
-      sku: row.sku ? text(row.sku) : null,
-      price: num(row.price),
-      cost: num(row.cost),
-      active: row.active !== false,
-      trackStock: Boolean(row.track_stock),
-      stock: num(row.stock_quantity),
-      minStock: num(row.min_stock),
-      description: row.description ? text(row.description) : null,
-      imageUrl: row.image_url ? text(row.image_url) : null,
-      convenienceId: row.convenience_id ? text(row.convenience_id) : null,
-    }))
-    .filter((item) => item.convenienceId === convenienceId);
+type ProductInput = {
+  id?: string;
+  name: string;
+  description?: string;
+  sku?: string;
+  category?: string;
+  price: number;
+  cost: number;
+  active: boolean;
+  trackStock: boolean;
+  stock: number;
+  minStock: number;
+  imageUrl?: string | null;
+};
+
+function mapProduct(row: Row): PdvProduct {
+  return {
+    id: text(row.id),
+    name: text(row.name) || 'Item',
+    category: row.category ? text(row.category) : null,
+    sku: row.sku ? text(row.sku) : null,
+    price: num(row.price),
+    cost: num(row.cost),
+    active: enabledFlag(row.active) !== false,
+    trackStock: tracksStock(row),
+    stock: num(row.stock_quantity),
+    minStock: num(row.min_stock),
+    description: row.description ? text(row.description) : null,
+    imageUrl: productImage(row),
+    convenienceId: rowConvenienceId(row) || null,
+  };
 }
 
-export async function saveProduct(
-  convenienceId: string,
-  product: {
-    id?: string;
-    name: string;
-    description?: string;
-    sku?: string;
-    category?: string;
-    price: number;
-    cost: number;
-    active: boolean;
-    trackStock: boolean;
-    stock: number;
-    minStock: number;
-    imageUrl?: string | null;
-  }
-) {
-  await callServerFn(FN.saveProduct, {
+function rowConvenienceId(row: Row) {
+  const direct = row.convenience_id ?? row.pos_convenience_id ?? row.convenienceId;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const nested = asObject(direct) ?? asObject(row.convenience);
+  const nestedId = nested?.id ?? nested?.convenience_id;
+  return typeof nestedId === 'string' && nestedId.trim() ? nestedId.trim() : '';
+}
+
+function productPayload(convenienceId: string, product: ProductInput) {
+  const trackStock = product.trackStock;
+  return {
     id: product.id,
     event_id: null,
     convenience_id: convenienceId,
@@ -406,11 +690,42 @@ export async function saveProduct(
     price: product.price,
     cost: product.cost,
     active: product.active,
-    track_stock: product.trackStock,
-    stock_quantity: product.trackStock ? product.stock : 0,
-    min_stock: product.trackStock ? product.minStock : 0,
+    track_stock: trackStock,
+    manage_stock: trackStock,
+    stock_control: trackStock,
+    stock_quantity: trackStock ? product.stock : 0,
+    min_stock: trackStock ? product.minStock : 0,
     image_url: product.imageUrl?.trim() || '',
-  });
+  };
+}
+
+async function writeProduct(convenienceId: string, product: ProductInput) {
+  const payload = productPayload(convenienceId, product);
+  try {
+    await callServerFn(FN.saveProduct, payload);
+  } catch (error) {
+    const { stock_control: _stockControl, ...withoutExtra } = payload;
+    try {
+      await callServerFn(FN.saveProduct, withoutExtra);
+    } catch {
+      throw error;
+    }
+  }
+}
+
+async function loadProductRows() {
+  const raw = await callServerFn<unknown>(FN.products, { mine: true });
+  return asRows(pick(raw, 'products'));
+}
+
+export async function fetchProducts(convenienceId: string): Promise<PdvProduct[]> {
+  const rows = await loadProductRows();
+  return rows.map(mapProduct).filter((item) => item.convenienceId === convenienceId);
+}
+
+export async function saveProduct(convenienceId: string, product: ProductInput) {
+  await writeProduct(convenienceId, product);
+  if (product.id) await rememberProductOwner(product.id, convenienceId);
 }
 
 export async function uploadProductImage(uri: string, contentType: string) {
@@ -450,6 +765,7 @@ export async function uploadProductImage(uri: string, contentType: string) {
 
 export async function deleteProduct(id: string) {
   await callServerFn(FN.deleteProduct, { id });
+  await forgetProductOwner(id);
 }
 
 export async function moveStock(productId: string, delta: number, inbound: boolean) {

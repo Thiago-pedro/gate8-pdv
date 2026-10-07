@@ -1,8 +1,10 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, Dimensions } from 'react-native';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { BackHandler, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, Dimensions, type PressableStateCallbackType, type StyleProp, type ViewStyle } from 'react-native';
+
+import { useScreenOverlay } from '@/components/screen-overlay';
 
 import { Loader } from '@/components/Loader';
 import { colors } from '@/constants/theme';
@@ -10,6 +12,11 @@ import { formatBRL, formatDateTime, formatEventDateTime } from '@/lib/format';
 import {
   CASHLESS_TX_LABELS,
   PAYMENT_LABELS,
+  paymentLabel,
+  saleBadgeLabel,
+  saleFeeLabel,
+  saleMatchesMethod,
+  storedFeeTotal,
   archiveConvenience,
   createConvenience,
   deleteCashlessCard,
@@ -45,6 +52,10 @@ import {
 
 type Tab = 'devices' | 'sales' | 'cashier' | 'items' | 'cashless';
 
+function tap(style: StyleProp<ViewStyle>) {
+  return ({ pressed }: PressableStateCallbackType) => [style, pressed && styles.tap];
+}
+
 const TABS: { key: Tab; label: string }[] = [
   { key: 'cashier', label: 'Caixas' },
   { key: 'cashless', label: 'Cashless' },
@@ -69,7 +80,6 @@ export function PdvSection({
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
-  const [newMerchant, setNewMerchant] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<PdvConvenience | null>(null);
   const [deleteName, setDeleteName] = useState('');
@@ -94,15 +104,36 @@ export function PdvSection({
   const visible = (list ?? []).filter((item) => (archived ? item.archived : !item.archived));
   const opened = (list ?? []).find((item) => item.id === openId) ?? null;
   const archivedCount = (list ?? []).filter((item) => item.archived).length;
+  const activeCount = (list ?? []).filter((item) => !item.archived).length;
+
+  async function onArchive(item: PdvConvenience) {
+    try {
+      await archiveConvenience(item.id, true);
+    } catch (caught) {
+      onToast(caught instanceof Error ? caught.message : 'Falha ao arquivar');
+      return;
+    }
+    try {
+      const devices = await fetchDevices(item.id);
+      await Promise.all(
+        devices
+          .filter((device) => device.status !== 'disabled')
+          .map((device) => setDeviceStatus(device.id, 'disabled'))
+      );
+      onToast('Conveniência arquivada');
+    } catch (caught) {
+      onToast(caught instanceof Error ? caught.message : 'Arquivada, mas as maquininhas não foram desativadas');
+    }
+    await load();
+  }
 
   async function onCreate() {
     if (!newName.trim()) return;
     setSaving(true);
     try {
-      const created = await createConvenience(newName, newMerchant);
+      const created = await createConvenience(newName, '');
       onToast('Conveniência criada');
       setNewName('');
-      setNewMerchant('');
       setCreating(false);
       const rows = await fetchConveniences();
       setList(rows);
@@ -144,23 +175,24 @@ export function PdvSection({
       <Text style={styles.hint}>
         Cada conveniência tem suas próprias maquininhas, vendas, caixas e itens — nada se mistura entre uma e outra.
       </Text>
-      <View style={styles.rowBetween}>
-        <Text style={styles.group}>
-          {archived ? 'Conveniências arquivadas' : 'Suas conveniências'} ({visible.length})
-        </Text>
-        {archivedCount > 0 ? (
-          <Pressable onPress={() => setArchived((value) => !value)} style={styles.linkBtn}>
-            <Text style={styles.linkText}>{archived ? 'Ativas' : `Arquivadas (${archivedCount})`}</Text>
-          </Pressable>
-        ) : null}
+      <View style={styles.salesFilters}>
+        <Pressable onPress={() => setArchived(false)} style={tap([styles.chip, !archived && styles.chipOn])}>
+          <Text style={[styles.chipText, !archived && styles.chipTextOn]}>Ativas ({activeCount})</Text>
+        </Pressable>
+        <Pressable onPress={() => setArchived(true)} style={tap([styles.chip, archived && styles.chipOn])}>
+          <Text style={[styles.chipText, archived && styles.chipTextOn]}>Arquivadas ({archivedCount})</Text>
+        </Pressable>
       </View>
+      <Text style={styles.group}>
+        {archived ? 'Conveniências arquivadas' : 'Suas conveniências'} ({visible.length})
+      </Text>
 
-      {!creating ? (
-        <Pressable onPress={() => setCreating(true)} style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}>
+      {!archived && !creating ? (
+        <Pressable onPress={() => setCreating(true)} style={tap(styles.primaryBtn)}>
           <Ionicons name="add" size={16} color={colors.loginText} />
           <Text style={styles.primaryText}>Nova conveniência</Text>
         </Pressable>
-      ) : (
+      ) : !archived ? (
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>Nome da conveniência</Text>
           <TextInput
@@ -171,36 +203,26 @@ export function PdvSection({
             style={styles.input}
             maxLength={120}
           />
-          <Text style={styles.fieldLabel}>Nome do estabelecimento (CNPJ) — opcional</Text>
-          <TextInput
-            value={newMerchant}
-            onChangeText={setNewMerchant}
-            placeholder="Aparece na maquininha. Pode deixar em branco."
-            placeholderTextColor="rgba(255,255,255,0.32)"
-            style={styles.input}
-            maxLength={120}
-          />
           <View style={styles.row}>
             <Pressable
               onPress={() => {
                 setCreating(false);
                 setNewName('');
-                setNewMerchant('');
               }}
-              style={styles.ghostBtn}
+              style={tap(styles.ghostBtn)}
             >
               <Text style={styles.ghostText}>Cancelar</Text>
             </Pressable>
             <Pressable
               onPress={() => void onCreate()}
               disabled={!newName.trim() || saving}
-              style={[styles.primaryBtn, (!newName.trim() || saving) && styles.off]}
+              style={tap([styles.primaryBtn, (!newName.trim() || saving) && styles.off])}
             >
               <Text style={styles.primaryText}>Criar</Text>
             </Pressable>
           </View>
         </View>
-      )}
+      ) : null}
 
       <Modal visible={!!deleting} transparent animationType="fade" onRequestClose={() => setDeleting(null)}>
         <Pressable style={styles.modalBg} onPress={() => setDeleting(null)}>
@@ -217,12 +239,12 @@ export function PdvSection({
               style={styles.input}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setDeleting(null)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setDeleting(null)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
                 onPress={async () => {
-                  if (!deleting) return;
+                  if (!deleting?.archived) return;
                   try {
                     await deleteConvenience(deleting.id, deleteName.trim());
                     onToast('Conveniência excluída');
@@ -234,7 +256,7 @@ export function PdvSection({
                   }
                 }}
                 disabled={!deleting || deleteName.trim() !== deleting.name}
-                style={[styles.primaryBtn, (!deleting || deleteName.trim() !== deleting.name) && styles.off]}
+                style={tap([styles.primaryBtn, (!deleting || deleteName.trim() !== deleting.name) && styles.off])}
               >
                 <Text style={styles.primaryText}>Excluir</Text>
               </Pressable>
@@ -265,13 +287,16 @@ export function PdvSection({
                     onPress={async () => {
                       try {
                         await archiveConvenience(item.id, false);
-                        onToast('Restaurada');
-                        await load();
                       } catch (caught) {
                         onToast(caught instanceof Error ? caught.message : 'Falha ao restaurar');
+                        return;
                       }
+                      onToast('Restaurada');
+                      setArchived(false);
+                      await load();
+                      setOpenId(item.id);
                     }}
-                    style={styles.listGhost}
+                    style={tap(styles.listGhost)}
                   >
                     <Text style={styles.listGhostText}>Restaurar</Text>
                   </Pressable>
@@ -280,28 +305,17 @@ export function PdvSection({
                       setDeleting(item);
                       setDeleteName('');
                     }}
-                    style={styles.listGhost}
+                    style={tap(styles.listDanger)}
                   >
-                    <Text style={[styles.listGhostText, { color: colors.danger }]}>Excluir</Text>
+                    <Text style={styles.listDangerText}>Excluir</Text>
                   </Pressable>
                 </>
               ) : (
                 <>
-                  <Pressable onPress={() => setOpenId(item.id)} style={styles.listPrimary}>
+                  <Pressable onPress={() => setOpenId(item.id)} style={tap(styles.listPrimary)}>
                     <Text style={styles.listPrimaryText}>Abrir</Text>
                   </Pressable>
-                  <Pressable
-                    onPress={async () => {
-                      try {
-                        await archiveConvenience(item.id, true);
-                        onToast('Arquivada');
-                        await load();
-                      } catch (caught) {
-                        onToast(caught instanceof Error ? caught.message : 'Falha ao arquivar');
-                      }
-                    }}
-                    style={styles.listGhost}
-                  >
+                  <Pressable onPress={() => void onArchive(item)} style={tap(styles.listGhost)}>
                     <Text style={styles.listGhostText}>Arquivar</Text>
                   </Pressable>
                 </>
@@ -331,19 +345,16 @@ function PdvDetail({
 }) {
   const [tab, setTab] = useState<Tab>('devices');
   const [name, setName] = useState(convenience.name);
-  const [merchant, setMerchant] = useState(convenience.merchantName ?? '');
   const [savingName, setSavingName] = useState(false);
-  const [savingMerchant, setSavingMerchant] = useState(false);
   const [regenOpen, setRegenOpen] = useState(false);
 
   useEffect(() => {
     setName(convenience.name);
-    setMerchant(convenience.merchantName ?? '');
-  }, [convenience.id, convenience.name, convenience.merchantName]);
+  }, [convenience.id, convenience.name]);
 
   return (
     <View style={styles.block}>
-      <Pressable onPress={onBack} style={styles.backRow}>
+      <Pressable onPress={onBack} style={tap(styles.backRow)}>
         <Ionicons name="chevron-back" size={18} color={colors.blue} />
         <Text style={styles.linkText}>Conveniências</Text>
       </Pressable>
@@ -359,12 +370,12 @@ function PdvDetail({
           </Pressable>
           <Pressable
             onPress={() => convenience.token && onCopy(convenience.token, 'Copiado')}
-            style={styles.ghostBtn}
+            style={tap(styles.ghostBtn)}
           >
             <Ionicons name="copy-outline" size={14} color={colors.blue} />
             <Text style={styles.ghostText}>Copiar</Text>
           </Pressable>
-          <Pressable onPress={() => setRegenOpen(true)} style={styles.ghostBtn}>
+          <Pressable onPress={() => setRegenOpen(true)} style={tap(styles.ghostBtn)}>
             <Ionicons name="refresh" size={14} color={colors.text} />
             <Text style={styles.ghostText}>Novo token</Text>
           </Pressable>
@@ -387,40 +398,9 @@ function PdvDetail({
                   setSavingName(false);
                 }
               }}
-              style={styles.ghostBtn}
+              style={tap(styles.ghostBtn)}
             >
               <Text style={styles.ghostText}>{savingName ? '...' : 'Salvar'}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-
-        <Text style={styles.fieldLabel}>Nome do estabelecimento — usado nas vendas do PDV</Text>
-        <View style={styles.amountRow}>
-          <TextInput
-            value={merchant}
-            onChangeText={setMerchant}
-            placeholder="Ex: Zahir Produções"
-            placeholderTextColor="rgba(255,255,255,0.32)"
-            style={styles.input}
-            maxLength={120}
-          />
-          {(merchant.trim() || '') !== (convenience.merchantName ?? '') ? (
-            <Pressable
-              onPress={async () => {
-                setSavingMerchant(true);
-                try {
-                  await updateConvenience(convenience.id, { merchantName: merchant.trim() || null });
-                  onToast('Nome do estabelecimento salvo');
-                  await onReload();
-                } catch (caught) {
-                  onToast(caught instanceof Error ? caught.message : 'Falha ao salvar');
-                } finally {
-                  setSavingMerchant(false);
-                }
-              }}
-              style={styles.ghostBtn}
-            >
-              <Text style={styles.ghostText}>{savingMerchant ? '...' : 'Salvar'}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -437,7 +417,7 @@ function PdvDetail({
           <Pressable
             key={item.key}
             onPress={() => setTab(item.key)}
-            style={[styles.subTab, tab === item.key && styles.subTabOn]}
+            style={tap([styles.subTab, tab === item.key && styles.subTabOn])}
           >
             <Text style={[styles.subTabText, tab === item.key && styles.subTabTextOn]} numberOfLines={1}>
               {item.label}
@@ -464,7 +444,7 @@ function PdvDetail({
               As maquininhas desta conveniência precisarão entrar novamente com o token novo.
             </Text>
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setRegenOpen(false)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setRegenOpen(false)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
@@ -478,7 +458,7 @@ function PdvDetail({
                     onToast(caught instanceof Error ? caught.message : 'Falha ao gerar token');
                   }
                 }}
-                style={styles.primaryBtn}
+                style={tap(styles.primaryBtn)}
               >
                 <Text style={styles.primaryText}>Gerar novo</Text>
               </Pressable>
@@ -581,11 +561,11 @@ function DeviceRow({
             onToast(caught instanceof Error ? caught.message : 'Falha ao atualizar');
           }
         }}
-        style={styles.ghostBtn}
+        style={tap(styles.ghostBtn)}
       >
         <Text style={styles.ghostText}>{off ? 'Reativar' : 'Desativar'}</Text>
       </Pressable>
-      <Pressable onPress={() => setConfirm(true)}>
+      <Pressable onPress={() => setConfirm(true)} hitSlop={6} style={tap(styles.iconHit)}>
         <Ionicons name="trash-outline" size={16} color={colors.danger} />
       </Pressable>
       <Modal visible={confirm} transparent animationType="fade" onRequestClose={() => setConfirm(false)}>
@@ -594,7 +574,7 @@ function DeviceRow({
             <Text style={styles.modalTitle}>Excluir maquininha?</Text>
             <Text style={styles.modalText}>{device.name} será removida permanentemente.</Text>
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setConfirm(false)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setConfirm(false)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
@@ -608,7 +588,7 @@ function DeviceRow({
                     onToast(caught instanceof Error ? caught.message : 'Falha ao excluir');
                   }
                 }}
-                style={styles.primaryBtn}
+                style={tap(styles.primaryBtn)}
               >
                 <Text style={styles.primaryText}>Excluir</Text>
               </Pressable>
@@ -656,7 +636,7 @@ function DateTimeField({
   return (
     <View style={styles.gap}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <Pressable onPress={start} style={styles.dateBtn}>
+      <Pressable onPress={start} style={tap(styles.dateBtn)}>
         <Ionicons name="calendar-outline" size={16} color={colors.blue} />
         <Text style={styles.dateText}>{formatEventDateTime(value.toISOString())}</Text>
       </Pressable>
@@ -714,7 +694,6 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
           from: range.from,
           to: range.to,
           deviceId: deviceId || null,
-          paymentMethod: method || null,
         }),
         fetchSalesSummary({ convenienceId, from: range.from, to: range.to, deviceId: deviceId || null }),
         fetchDevices(convenienceId),
@@ -729,7 +708,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
     } finally {
       setBusy(false);
     }
-  }, [convenienceId, range.from, range.to, method, deviceId]);
+  }, [convenienceId, range.from, range.to, deviceId]);
 
   useEffect(() => {
     void load();
@@ -737,14 +716,23 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return sales;
     return sales.filter((sale) => {
+      if (!saleMatchesMethod(sale, method)) return false;
+      if (!needle) return true;
       const hay = [
         sale.authorization,
         sale.nsu,
         sale.deviceName,
         sale.operator ?? '',
         sale.items.join(' '),
+        saleBadgeLabel(sale),
+        ...sale.payments.flatMap((part) => [
+          paymentLabel(part.method),
+          part.nsu ?? '',
+          part.authorization ?? '',
+          part.brand ?? '',
+          formatBRL(part.amount),
+        ]),
         String(sale.amount),
         formatBRL(sale.amount),
       ]
@@ -752,8 +740,12 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
         .toLowerCase();
       return hay.includes(needle);
     });
-  }, [sales, query]);
+  }, [sales, query, method]);
 
+  const storedFee = useMemo(
+    () => (summary ? storedFeeTotal(sales, summary.saleCount) : null),
+    [sales, summary]
+  );
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   const current = Math.min(page, pages - 1);
   const paged = filtered.slice(current * 8, current * 8 + 8);
@@ -771,14 +763,14 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
           <Pressable
             key={String(value)}
             onPress={() => setPeriod(value)}
-            style={[styles.chip, styles.periodChip, period === value && styles.chipOn]}
+            style={tap([styles.chip, styles.periodChip, period === value && styles.chipOn])}
           >
             <Text style={[styles.chipText, period === value && styles.chipTextOn]}>{label}</Text>
           </Pressable>
         ))}
         <Pressable
           onPress={() => setPeriod('custom')}
-          style={[styles.chip, styles.periodChip, period === 'custom' && styles.chipOn]}
+          style={tap([styles.chip, styles.periodChip, period === 'custom' && styles.chipOn])}
         >
           <Text style={[styles.chipText, period === 'custom' && styles.chipTextOn]}>Personalizado</Text>
         </Pressable>
@@ -800,8 +792,11 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
         ].map(([value, label]) => (
           <Pressable
             key={value || 'all'}
-            onPress={() => setMethod(value)}
-            style={[styles.chip, method === value && styles.chipOn]}
+            onPress={() => {
+              setMethod(value);
+              setPage(0);
+            }}
+            style={tap([styles.chip, method === value && styles.chipOn])}
           >
             <Text style={[styles.chipText, method === value && styles.chipTextOn]}>{label}</Text>
           </Pressable>
@@ -809,14 +804,14 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
       </View>
       {devices.length > 0 ? (
         <View style={styles.salesFilters}>
-          <Pressable onPress={() => setDeviceId('')} style={[styles.chip, !deviceId && styles.chipOn]}>
+          <Pressable onPress={() => setDeviceId('')} style={tap([styles.chip, !deviceId && styles.chipOn])}>
             <Text style={[styles.chipText, !deviceId && styles.chipTextOn]}>Todas as maquininhas</Text>
           </Pressable>
           {devices.map((device) => (
             <Pressable
               key={device.id}
               onPress={() => setDeviceId(device.id)}
-              style={[styles.chip, deviceId === device.id && styles.chipOn]}
+              style={tap([styles.chip, deviceId === device.id && styles.chipOn])}
             >
               <Text style={[styles.chipText, deviceId === device.id && styles.chipTextOn]} numberOfLines={1}>
                 {device.name}
@@ -843,12 +838,22 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
       ) : (
         <>
           {summary ? (
-            <View style={styles.kpis}>
-              <Kpi label="Vendas" value={String(summary.saleCount)} />
-              <Kpi label="Bruto" value={formatBRL(summary.gross)} />
-              <Kpi label="Taxa banco" value={formatBRL(summary.bank)} />
-              <Kpi label="Taxa Gate8" value={formatBRL(summary.gate8)} />
-              <Kpi label="Líquido" value={formatBRL(summary.net)} accent />
+            <View style={styles.gap}>
+              <View style={styles.salesKpiRow}>
+                <Kpi label="Vendas" value={String(summary.saleCount)} flex />
+                <Kpi label="Bruto" value={formatBRL(summary.gross)} flex />
+                <Kpi
+                  label="Taxa Gate8"
+                  value={`- ${formatBRL(storedFee ?? summary.bank + summary.gate8)}`}
+                  flex
+                />
+              </View>
+              <Kpi
+                label="Líquido"
+                value={formatBRL(storedFee != null ? summary.gross - storedFee : summary.net)}
+                accent
+                spread
+              />
             </View>
           ) : null}
           {summary?.byMethod.length ? (
@@ -869,7 +874,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
               <View style={styles.rowBetween}>
                 <Text style={styles.name}>{formatBRL(sale.amount)}</Text>
                 <View style={styles.row}>
-                  <Text style={styles.badge}>{PAYMENT_LABELS[sale.method] ?? sale.method}</Text>
+                  <Text style={styles.badge}>{saleBadgeLabel(sale)}</Text>
                   {sale.voided ? <Text style={[styles.badge, styles.badgeDanger]}>Estornada</Text> : null}
                 </View>
               </View>
@@ -878,7 +883,24 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
                 Local {sale.deviceName}
                 {sale.operator ? ` · ${sale.operator}` : ''}
               </Text>
-              <Text style={styles.meta}>Aut. {sale.authorization} · NSU {sale.nsu}</Text>
+              {sale.payments.length > 0 ? (
+                sale.payments.map((part, index) => {
+                  const fee = saleFeeLabel(part.fee);
+                  return (
+                    <Text key={`${sale.id}-pay-${index}`} style={styles.meta}>
+                      {paymentLabel(part.method)} · {formatBRL(part.amount)}
+                      {part.nsu ? ` · NSU ${part.nsu}` : ''}
+                      {part.authorization ? ` · Aut. ${part.authorization}` : ''}
+                      {fee ? ` · ${fee}` : ''}
+                    </Text>
+                  );
+                })
+              ) : (
+                <Text style={styles.meta}>Aut. {sale.authorization} · NSU {sale.nsu}</Text>
+              )}
+              {sale.payments.length === 0 || sale.payments.some((part) => !part.fee) ? (
+                saleFeeLabel(sale.fee) ? <Text style={styles.meta}>{saleFeeLabel(sale.fee)}</Text> : null
+              ) : null}
               {sale.items.length ? <Text style={styles.meta}>Itens {sale.items.join(', ')}</Text> : null}
             </View>
           ))}
@@ -889,13 +911,13 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
                 Página {current + 1} de {pages}
               </Text>
               <View style={styles.row}>
-                <Pressable onPress={() => setPage(current - 1)} disabled={current === 0} style={styles.ghostBtn}>
+                <Pressable onPress={() => setPage(current - 1)} disabled={current === 0} style={tap(styles.ghostBtn)}>
                   <Text style={styles.ghostText}>Anterior</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setPage(current + 1)}
                   disabled={current >= pages - 1}
-                  style={styles.ghostBtn}
+                  style={tap(styles.ghostBtn)}
                 >
                   <Text style={styles.ghostText}>Próxima</Text>
                 </Pressable>
@@ -908,11 +930,31 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
   );
 }
 
-function Kpi({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function Kpi({
+  label,
+  value,
+  accent,
+  flex,
+  spread,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+  flex?: boolean;
+  spread?: boolean;
+}) {
   return (
-    <View style={[styles.kpi, accent && styles.kpiAccent]}>
-      <Text style={styles.kpiLabel}>{label}</Text>
-      <Text style={[styles.kpiValue, accent && styles.linkText]}>{value}</Text>
+    <View style={[flex ? styles.salesKpi : styles.kpi, accent && styles.kpiFull, accent && styles.kpiAccent, spread && styles.kpiSpread]}>
+      <Text style={[styles.kpiLabel, spread && styles.kpiLabelForward]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text
+        style={[styles.kpiValue, flex && styles.kpiValueCompact, spread && styles.kpiValueForward, accent && !spread && styles.linkText]}
+        numberOfLines={1}
+        adjustsFontSizeToFit={!spread}
+      >
+        {value}
+      </Text>
     </View>
   );
 }
@@ -954,7 +996,7 @@ function CashierPane({ convenienceId, nonce }: { convenienceId: string; nonce: n
           <Pressable
             key={value}
             onPress={() => setStatus(value)}
-            style={[styles.chip, status === value && styles.chipOn]}
+            style={tap([styles.chip, status === value && styles.chipOn])}
           >
             <Text style={[styles.chipText, status === value && styles.chipTextOn]}>
               {value === 'all' ? 'Todos' : value === 'open' ? 'Aberto' : 'Fechado'}
@@ -1022,6 +1064,8 @@ function ItemsPane({
   const [stockItem, setStockItem] = useState<PdvProduct | null>(null);
   const [stockQty, setStockQty] = useState('');
   const [stockIn, setStockIn] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState<PdvProduct | null>(null);
+  const [deletingItem, setDeletingItem] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -1037,6 +1081,15 @@ function ItemsPane({
   useEffect(() => {
     void load();
   }, [load, nonce]);
+
+  const savedCategories = [
+    'Cozinha',
+    ...[...new Set(
+      items
+        .map((item) => item.category?.trim())
+        .filter((name): name is string => !!name && name.toLowerCase() !== 'cozinha')
+    )].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+  ];
 
   async function pickProductPhoto() {
     try {
@@ -1065,10 +1118,15 @@ function ItemsPane({
     }
   }
 
-  function openNewItem() {
+  function openEditor(item: Partial<PdvProduct>) {
     setPendingImage(null);
-    setEditing({
+    setEditing(item);
+  }
+
+  function openNewItem() {
+    openEditor({
       name: '',
+      category: '',
       price: 0,
       cost: 0,
       active: true,
@@ -1084,9 +1142,262 @@ function ItemsPane({
     setPendingImage(null);
   }
 
+  const [sheetHeight, setSheetHeight] = useState(0);
+
+  useEffect(() => {
+    if (!editing) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeItemModal();
+      return true;
+    });
+    return () => sub.remove();
+  }, [editing]);
+
+  useScreenOverlay(
+    editing ? (
+      <View
+        style={styles.editorOverlay}
+        onLayout={(event) => {
+          const next = Math.round(event.nativeEvent.layout.height);
+          setSheetHeight((current) => (current === next ? current : next));
+        }}
+      >
+        <Pressable style={styles.modalBg} onPress={closeItemModal}>
+          <Pressable style={[styles.modal, styles.itemSheet]} onPress={() => undefined}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+              style={[styles.itemModalScroll, sheetHeight > 0 && { maxHeight: sheetHeight - 36 }]}
+              contentContainerStyle={styles.itemForm}
+            >
+              <Text style={styles.modalTitle}>{editing?.id ? 'Editar item' : 'Novo item'}</Text>
+              <View style={styles.photoCenter}>
+                <View>
+                  <Pressable
+                    onPress={() => void pickProductPhoto()}
+                    style={tap(styles.productPhotoBtn)}
+                    accessibilityLabel="Enviar foto do produto"
+                  >
+                    {editing?.imageUrl ? (
+                      <Image source={{ uri: editing.imageUrl }} style={styles.productPhoto} />
+                    ) : (
+                      <View style={styles.productPhotoEmpty}>
+                        <Ionicons name="cloud-upload-outline" size={42} color={colors.muted} />
+                      </View>
+                    )}
+                    {editing?.imageUrl ? (
+                      <View style={styles.photoBadge} pointerEvents="none">
+                        <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                      </View>
+                    ) : null}
+                  </Pressable>
+                  {editing?.imageUrl ? (
+                    <Pressable
+                      onPress={() => {
+                        setPendingImage(null);
+                        setEditing((current) => ({ ...current, imageUrl: null }));
+                      }}
+                      style={tap(styles.photoRemove)}
+                      hitSlop={8}
+                      accessibilityLabel="Remover foto"
+                    >
+                      <Ionicons name="close" size={16} color="#fff" />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+              <TextInput
+                value={editing?.name ?? ''}
+                onChangeText={(value) => setEditing((current) => ({ ...current, name: value }))}
+                placeholder="Nome"
+                placeholderTextColor="rgba(255,255,255,0.32)"
+                style={[styles.input, styles.soloInput]}
+              />
+              <View style={styles.inlineField}>
+                <Text style={styles.inlineLabel}>Categoria</Text>
+                <TextInput
+                  value={editing?.category ?? ''}
+                  onChangeText={(value) => setEditing((current) => ({ ...current, category: value }))}
+                  placeholder="Nova categoria"
+                  placeholderTextColor="rgba(255,255,255,0.32)"
+                  style={styles.input}
+                />
+              </View>
+              {savedCategories.length > 0 ? (
+                <View style={styles.chips}>
+                  {savedCategories.map((category) => {
+                    const selected = (editing?.category ?? '').trim().toLowerCase() === category.toLowerCase();
+                    return (
+                      <Pressable
+                        key={category}
+                        onPress={() => setEditing((current) => ({ ...current, category }))}
+                        style={tap([styles.chip, selected && styles.chipOn])}
+                      >
+                        <Text style={[styles.chipText, selected && styles.chipTextOn]}>{category}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+              <View style={styles.inlineField}>
+                <Text style={styles.inlineLabel}>SKU</Text>
+                <TextInput
+                  value={editing?.sku ?? ''}
+                  onChangeText={(value) => setEditing((current) => ({ ...current, sku: value }))}
+                  placeholder="SKU"
+                  placeholderTextColor="rgba(255,255,255,0.32)"
+                  style={styles.input}
+                />
+              </View>
+              <View style={styles.inlineField}>
+                <Text style={styles.inlineLabel}>Preço de venda</Text>
+                <TextInput
+                  value={editing && editing.price ? String(editing.price) : ''}
+                  onChangeText={(value) => setEditing((current) => ({ ...current, price: Number(value.replace(',', '.')) || 0 }))}
+                  placeholder="0,00"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor="rgba(255,255,255,0.32)"
+                  style={styles.input}
+                />
+              </View>
+              <View style={styles.inlineField}>
+                <Text style={styles.inlineLabel}>Custo</Text>
+                <TextInput
+                  value={editing && editing.cost ? String(editing.cost) : ''}
+                  onChangeText={(value) => setEditing((current) => ({ ...current, cost: Number(value.replace(',', '.')) || 0 }))}
+                  placeholder="0,00"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor="rgba(255,255,255,0.32)"
+                  style={styles.input}
+                />
+              </View>
+              <Pressable
+                onPress={() => setEditing((current) => ({ ...current, active: current?.active === false }))}
+                style={tap(styles.switchRow)}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: editing?.active !== false }}
+              >
+                <Text style={styles.switchLabel}>Ativo</Text>
+                <View style={styles.switchLine} />
+                <Switch value={editing?.active !== false} pointerEvents="none" trackColor={{ true: colors.blue }} />
+              </Pressable>
+              <Pressable
+                onPress={() => setEditing((current) => ({ ...current, trackStock: !current?.trackStock }))}
+                style={tap(styles.switchRow)}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: !!editing?.trackStock }}
+              >
+                <Text style={styles.switchLabel}>Controlar estoque</Text>
+                <View style={styles.switchLine} />
+                <Switch value={!!editing?.trackStock} pointerEvents="none" trackColor={{ true: colors.blue }} />
+              </Pressable>
+              {editing?.trackStock ? (
+                <View style={styles.inlineField}>
+                  <Text style={styles.inlineLabel}>Estoque</Text>
+                  <TextInput
+                    value={String(editing.stock ?? 0)}
+                    onChangeText={(value) => setEditing((current) => ({ ...current, stock: Number(value) || 0 }))}
+                    placeholder="0"
+                    keyboardType="number-pad"
+                    placeholderTextColor="rgba(255,255,255,0.32)"
+                    style={styles.input}
+                  />
+                  <Text style={styles.inlineLabel}>Mínimo</Text>
+                  <TextInput
+                    value={String(editing.minStock ?? 0)}
+                    onChangeText={(value) => setEditing((current) => ({ ...current, minStock: Number(value) || 0 }))}
+                    placeholder="0"
+                    keyboardType="number-pad"
+                    placeholderTextColor="rgba(255,255,255,0.32)"
+                    style={styles.input}
+                  />
+                </View>
+              ) : null}
+              <View style={styles.modalActions}>
+                <Pressable onPress={closeItemModal} style={tap(styles.ghostBtn)}>
+                  <Text style={styles.ghostText}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  onPress={async () => {
+                    if (!editing?.name?.trim() || savingItem) return;
+                    setSavingItem(true);
+                    try {
+                      let imageUrl = editing.imageUrl ?? '';
+                      if (pendingImage) {
+                        imageUrl = await uploadProductImage(pendingImage.uri, pendingImage.type);
+                      } else if (imageUrl.startsWith('file:')) {
+                        imageUrl = '';
+                      }
+                      await saveProduct(convenienceId, {
+                        id: editing.id,
+                        name: editing.name,
+                        category: editing.category ?? '',
+                        sku: editing.sku ?? '',
+                        description: editing.description ?? '',
+                        price: editing.price ?? 0,
+                        cost: editing.cost ?? 0,
+                        active: editing.active !== false,
+                        trackStock: !!editing.trackStock,
+                        stock: editing.stock ?? 0,
+                        minStock: editing.minStock ?? 0,
+                        imageUrl,
+                      });
+                      onToast('Item salvo. Na maquininha, abra Produtos e toque em Atualizar.');
+                      closeItemModal();
+                      await load();
+                    } catch (caught) {
+                      onToast(caught instanceof Error ? caught.message : 'Falha ao salvar');
+                    } finally {
+                      setSavingItem(false);
+                    }
+                  }}
+                  style={tap([styles.primaryBtn, savingItem && styles.off])}
+                >
+                  <Text style={styles.primaryText}>{savingItem ? 'Salvando...' : 'Salvar'}</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </View>
+    ) : confirmDelete ? (
+      <View pointerEvents="box-none" style={styles.confirmToastWrap}>
+        <View style={styles.confirmToast}>
+          <Text style={styles.confirmToastText}>Excluir {confirmDelete.name}?</Text>
+          <View style={styles.confirmToastActions}>
+            <Pressable onPress={() => setConfirmDelete(null)} style={tap(styles.ghostBtn)} disabled={deletingItem}>
+              <Text style={styles.ghostText}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              onPress={async () => {
+                if (deletingItem) return;
+                setDeletingItem(true);
+                try {
+                  await deleteProduct(confirmDelete.id);
+                  setConfirmDelete(null);
+                  onToast('Item excluído');
+                  await load();
+                } catch (caught) {
+                  onToast(caught instanceof Error ? caught.message : 'Falha ao excluir');
+                } finally {
+                  setDeletingItem(false);
+                }
+              }}
+              style={tap([styles.listDanger, deletingItem && styles.off])}
+              disabled={deletingItem}
+            >
+              <Text style={styles.listDangerText}>{deletingItem ? 'Excluindo...' : 'Excluir'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    ) : null,
+  );
+
   return (
     <View style={styles.gap}>
-      <Pressable onPress={openNewItem} style={styles.primaryBtn}>
+      <Pressable onPress={openNewItem} style={tap(styles.primaryBtn)}>
         <Ionicons name="add" size={16} color={colors.loginText} />
         <Text style={styles.primaryText}>Novo item</Text>
       </Pressable>
@@ -1095,12 +1406,12 @@ function ItemsPane({
           <Loader size={96} />
         </View>
       ) : items.length === 0 ? (
-        <Text style={styles.empty}>Nenhum item cadastrado para este evento.</Text>
+        <Text style={styles.empty}>Nenhum item cadastrado nesta conveniência.</Text>
       ) : (
         items.map((item) => (
           <View key={item.id} style={styles.hit}>
             {item.imageUrl ? (
-              <Image source={{ uri: item.imageUrl }} style={styles.productThumb} />
+              <Image source={{ uri: item.imageUrl }} style={styles.productThumb} resizeMode="cover" />
             ) : (
               <View style={styles.productThumbEmpty}>
                 <Ionicons name="image-outline" size={16} color={colors.muted} />
@@ -1114,205 +1425,42 @@ function ItemsPane({
                 {item.sku ? ` · SKU ${item.sku}` : ''}
               </Text>
             </View>
-            {!item.active ? <Text style={styles.badge}>inativo</Text> : null}
             {item.trackStock && item.stock <= item.minStock ? (
               <Text style={[styles.badge, styles.badgeDanger]}>estoque baixo</Text>
             ) : null}
             {item.trackStock ? (
-              <Pressable onPress={() => setStockItem(item)}>
+              <Pressable onPress={() => setStockItem(item)} style={tap(styles.itemIconBtn)}>
                 <Text style={styles.linkText}>±</Text>
               </Pressable>
             ) : null}
-            <Pressable onPress={() => {
-              setPendingImage(null);
-              setEditing(item);
-            }}>
-              <Ionicons name="pencil" size={15} color={colors.blue} />
+            <Pressable
+              onPress={() => openEditor(item)}
+              style={tap(styles.itemIconBtn)}
+              hitSlop={4}
+            >
+              <Ionicons name="pencil" size={22} color={colors.blue} />
             </Pressable>
             <Pressable
-              onPress={async () => {
-                try {
-                  await deleteProduct(item.id);
-                  onToast('Item excluído');
-                  await load();
-                } catch (caught) {
-                  onToast(caught instanceof Error ? caught.message : 'Falha ao excluir');
-                }
-              }}
+              onPress={() => setConfirmDelete(item)}
+              style={tap(styles.itemIconBtn)}
+              hitSlop={4}
             >
-              <Ionicons name="trash-outline" size={15} color={colors.danger} />
+              <Ionicons name="trash-outline" size={22} color={colors.danger} />
             </Pressable>
           </View>
         ))
       )}
 
-      <Modal visible={!!editing} transparent animationType="fade" onRequestClose={closeItemModal}>
-        <Pressable style={styles.modalBg} onPress={closeItemModal}>
-          <Pressable style={styles.modal} onPress={() => undefined}>
-            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 10 }}>
-            <Text style={styles.modalTitle}>{editing?.id ? 'Editar item' : 'Novo item'}</Text>
-            <Text style={styles.fieldLabel}>Foto do produto</Text>
-            <View style={styles.photoRow}>
-              {editing?.imageUrl ? (
-                <Image source={{ uri: editing.imageUrl }} style={styles.productPhoto} />
-              ) : (
-                <View style={styles.productPhotoEmpty}>
-                  <Ionicons name="image-outline" size={28} color={colors.muted} />
-                </View>
-              )}
-              <View style={styles.photoActions}>
-                <Pressable onPress={() => void pickProductPhoto()} style={styles.ghostBtn}>
-                  <Text style={styles.ghostText}>{editing?.imageUrl ? 'Trocar foto' : 'Escolher foto'}</Text>
-                </Pressable>
-                {editing?.imageUrl ? (
-                  <Pressable
-                    onPress={() => {
-                      setPendingImage(null);
-                      setEditing((current) => ({ ...current, imageUrl: null }));
-                    }}
-                    style={styles.ghostBtn}
-                  >
-                    <Text style={styles.ghostText}>Remover</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </View>
-            <TextInput
-              value={editing?.name ?? ''}
-              onChangeText={(value) => setEditing((current) => ({ ...current, name: value }))}
-              placeholder="Nome"
-              placeholderTextColor="rgba(255,255,255,0.32)"
-              style={styles.input}
-            />
-            <TextInput
-              value={editing?.category ?? ''}
-              onChangeText={(value) => setEditing((current) => ({ ...current, category: value }))}
-              placeholder="Categoria"
-              placeholderTextColor="rgba(255,255,255,0.32)"
-              style={styles.input}
-            />
-            <TextInput
-              value={editing?.sku ?? ''}
-              onChangeText={(value) => setEditing((current) => ({ ...current, sku: value }))}
-              placeholder="SKU"
-              placeholderTextColor="rgba(255,255,255,0.32)"
-              style={styles.input}
-            />
-            <Text style={styles.fieldLabel}>Preço de venda (R$)</Text>
-            <TextInput
-              value={editing && editing.price ? String(editing.price) : ''}
-              onChangeText={(value) => setEditing((current) => ({ ...current, price: Number(value.replace(',', '.')) || 0 }))}
-              placeholder="0,00"
-              keyboardType="decimal-pad"
-              placeholderTextColor="rgba(255,255,255,0.32)"
-              style={styles.input}
-            />
-            <Text style={styles.fieldLabel}>Custo (R$)</Text>
-            <TextInput
-              value={editing && editing.cost ? String(editing.cost) : ''}
-              onChangeText={(value) => setEditing((current) => ({ ...current, cost: Number(value.replace(',', '.')) || 0 }))}
-              placeholder="0,00"
-              keyboardType="decimal-pad"
-              placeholderTextColor="rgba(255,255,255,0.32)"
-              style={styles.input}
-            />
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Ativo</Text>
-              <View style={styles.switchLine} />
-              <Switch
-                value={editing?.active !== false}
-                onValueChange={(value) => setEditing((current) => ({ ...current, active: value }))}
-                trackColor={{ true: colors.blue }}
-              />
-            </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Controlar estoque</Text>
-              <View style={styles.switchLine} />
-              <Switch
-                value={!!editing?.trackStock}
-                onValueChange={(value) => setEditing((current) => ({ ...current, trackStock: value }))}
-                trackColor={{ true: colors.blue }}
-              />
-            </View>
-            {editing?.trackStock ? (
-              <>
-                <Text style={styles.fieldLabel}>Estoque atual</Text>
-                <TextInput
-                  value={String(editing.stock ?? 0)}
-                  onChangeText={(value) => setEditing((current) => ({ ...current, stock: Number(value) || 0 }))}
-                  placeholder="0"
-                  keyboardType="number-pad"
-                  placeholderTextColor="rgba(255,255,255,0.32)"
-                  style={styles.input}
-                />
-                <Text style={styles.fieldLabel}>Estoque mínimo (alerta de baixo)</Text>
-                <TextInput
-                  value={String(editing.minStock ?? 0)}
-                  onChangeText={(value) => setEditing((current) => ({ ...current, minStock: Number(value) || 0 }))}
-                  placeholder="0"
-                  keyboardType="number-pad"
-                  placeholderTextColor="rgba(255,255,255,0.32)"
-                  style={styles.input}
-                />
-              </>
-            ) : null}
-            <View style={styles.modalActions}>
-              <Pressable onPress={closeItemModal} style={styles.ghostBtn}>
-                <Text style={styles.ghostText}>Cancelar</Text>
-              </Pressable>
-              <Pressable
-                onPress={async () => {
-                  if (!editing?.name?.trim() || savingItem) return;
-                  setSavingItem(true);
-                  try {
-                    let imageUrl = editing.imageUrl ?? '';
-                    if (pendingImage) {
-                      imageUrl = await uploadProductImage(pendingImage.uri, pendingImage.type);
-                    } else if (imageUrl.startsWith('file:')) {
-                      imageUrl = '';
-                    }
-                    await saveProduct(convenienceId, {
-                      id: editing.id,
-                      name: editing.name,
-                      category: editing.category ?? '',
-                      sku: editing.sku ?? '',
-                      description: editing.description ?? '',
-                      price: editing.price ?? 0,
-                      cost: editing.cost ?? 0,
-                      active: editing.active !== false,
-                      trackStock: !!editing.trackStock,
-                      stock: editing.stock ?? 0,
-                      minStock: editing.minStock ?? 0,
-                      imageUrl,
-                    });
-                    onToast('Item salvo');
-                    closeItemModal();
-                    await load();
-                  } catch (caught) {
-                    onToast(caught instanceof Error ? caught.message : 'Falha ao salvar');
-                  } finally {
-                    setSavingItem(false);
-                  }
-                }}
-                style={[styles.primaryBtn, savingItem && styles.off]}
-              >
-                <Text style={styles.primaryText}>{savingItem ? 'Salvando...' : 'Salvar'}</Text>
-              </Pressable>
-            </View>
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
 
       <Modal visible={!!stockItem} transparent animationType="fade" onRequestClose={() => setStockItem(null)}>
         <Pressable style={styles.modalBg} onPress={() => setStockItem(null)}>
           <Pressable style={styles.modal} onPress={() => undefined}>
             <Text style={styles.modalTitle}>Movimentar estoque</Text>
             <View style={styles.chips}>
-              <Pressable onPress={() => setStockIn(true)} style={[styles.chip, stockIn && styles.chipOn]}>
+              <Pressable onPress={() => setStockIn(true)} style={tap([styles.chip, stockIn && styles.chipOn])}>
                 <Text style={[styles.chipText, stockIn && styles.chipTextOn]}>Entrada</Text>
               </Pressable>
-              <Pressable onPress={() => setStockIn(false)} style={[styles.chip, !stockIn && styles.chipOn]}>
+              <Pressable onPress={() => setStockIn(false)} style={tap([styles.chip, !stockIn && styles.chipOn])}>
                 <Text style={[styles.chipText, !stockIn && styles.chipTextOn]}>Saída</Text>
               </Pressable>
             </View>
@@ -1325,7 +1473,7 @@ function ItemsPane({
               style={styles.input}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setStockItem(null)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setStockItem(null)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
@@ -1342,7 +1490,7 @@ function ItemsPane({
                     onToast(caught instanceof Error ? caught.message : 'Falha no estoque');
                   }
                 }}
-                style={styles.primaryBtn}
+                style={tap(styles.primaryBtn)}
               >
                 <Text style={styles.primaryText}>Confirmar</Text>
               </Pressable>
@@ -1415,10 +1563,10 @@ function CashlessPane({
           returnKeyType="search"
           onSubmitEditing={() => setApplied(search.trim())}
         />
-        <Pressable onPress={() => setApplied(search.trim())} style={styles.ghostBtn}>
+        <Pressable onPress={() => setApplied(search.trim())} style={tap(styles.ghostBtn)}>
           <Text style={styles.ghostText}>Buscar</Text>
         </Pressable>
-        <Pressable onPress={() => setForm({ uid: '', holder: '', cpf: '', phone: '' })} style={styles.primaryBtn}>
+        <Pressable onPress={() => setForm({ uid: '', holder: '', cpf: '', phone: '' })} style={tap(styles.primaryBtn)}>
           <Text style={styles.primaryText}>Novo</Text>
         </Pressable>
       </View>
@@ -1456,11 +1604,11 @@ function CashlessPane({
                       phone: card.phone ?? '',
                     })
                   }
-                  style={styles.ghostBtn}
+                  style={tap(styles.ghostBtn)}
                 >
                   <Text style={styles.ghostText}>Editar</Text>
                 </Pressable>
-                <Pressable onPress={() => setMove(card)} style={styles.ghostBtn}>
+                <Pressable onPress={() => setMove(card)} style={tap(styles.ghostBtn)}>
                   <Text style={styles.ghostText}>Saldo</Text>
                 </Pressable>
                 <Pressable
@@ -1472,7 +1620,7 @@ function CashlessPane({
                       setTxs([]);
                     }
                   }}
-                  style={styles.ghostBtn}
+                  style={tap(styles.ghostBtn)}
                 >
                   <Text style={styles.ghostText}>Histórico</Text>
                 </Pressable>
@@ -1485,7 +1633,7 @@ function CashlessPane({
                       onToast(caught instanceof Error ? caught.message : 'Falha ao atualizar');
                     }
                   }}
-                  style={styles.ghostBtn}
+                  style={tap(styles.ghostBtn)}
                 >
                   <Text style={styles.ghostText}>{card.status === 'active' ? 'Bloquear' : 'Desbloquear'}</Text>
                 </Pressable>
@@ -1541,7 +1689,7 @@ function CashlessPane({
               style={styles.input}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setForm(null)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setForm(null)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
@@ -1572,7 +1720,7 @@ function CashlessPane({
                     );
                   }
                 }}
-                style={styles.primaryBtn}
+                style={tap(styles.primaryBtn)}
               >
                 <Text style={styles.primaryText}>Salvar</Text>
               </Pressable>
@@ -1597,7 +1745,7 @@ function CashlessPane({
                 <Pressable
                   key={value}
                   onPress={() => setMoveType(value)}
-                  style={[styles.chip, moveType === value && styles.chipOn]}
+                  style={tap([styles.chip, moveType === value && styles.chipOn])}
                 >
                   <Text style={[styles.chipText, moveType === value && styles.chipTextOn]}>{label}</Text>
                 </Pressable>
@@ -1612,7 +1760,7 @@ function CashlessPane({
               style={styles.input}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setMove(null)} style={styles.ghostBtn}>
+              <Pressable onPress={() => setMove(null)} style={tap(styles.ghostBtn)}>
                 <Text style={styles.ghostText}>Cancelar</Text>
               </Pressable>
               <Pressable
@@ -1630,7 +1778,7 @@ function CashlessPane({
                     onToast(message.includes('saldo_insuficiente') ? 'Saldo insuficiente' : 'Não foi possível atualizar');
                   }
                 }}
-                style={styles.primaryBtn}
+                style={tap(styles.primaryBtn)}
               >
                 <Text style={styles.primaryText}>Confirmar</Text>
               </Pressable>
@@ -1652,7 +1800,7 @@ function CashlessPane({
                 <Text style={styles.meta}>{formatBRL(tx.amount)}</Text>
               </View>
             ))}
-            <Pressable onPress={() => setHistory(null)} style={[styles.ghostBtn, { marginTop: 12 }]}>
+            <Pressable onPress={() => setHistory(null)} style={tap([styles.ghostBtn, { marginTop: 12 }])}>
               <Text style={styles.ghostText}>Fechar</Text>
             </Pressable>
           </Pressable>
@@ -1707,6 +1855,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   listPrimaryText: { color: colors.loginText, fontWeight: '700', fontSize: 13 },
+  listDanger: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,92,122,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listDangerText: { color: colors.danger, fontWeight: '700', fontSize: 13 },
   listGhost: {
     height: 34,
     paddingHorizontal: 12,
@@ -1732,7 +1889,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    minHeight: 36,
+    minHeight: 44,
+    borderRadius: 10,
+    paddingHorizontal: 4,
   },
   switchLabel: {
     color: colors.text,
@@ -1746,28 +1905,51 @@ const styles = StyleSheet.create({
   },
   amountRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   fieldLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600' },
-  photoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  photoActions: {
-    flex: 1,
-    gap: 8,
+  itemForm: { gap: 8 },
+  inlineField: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  inlineLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600', flexShrink: 0 },
+  soloInput: { flex: 0, alignSelf: 'stretch' },
+  photoCenter: { alignItems: 'center' },
+  productPhotoBtn: {
+    width: 112,
+    height: 112,
+    borderRadius: 16,
+    overflow: 'hidden',
   },
   productPhoto: {
-    width: 72,
-    height: 72,
-    borderRadius: 12,
+    width: 112,
+    height: 112,
     backgroundColor: 'rgba(255,255,255,0.06)',
   },
   productPhotoEmpty: {
-    width: 72,
-    height: 72,
-    borderRadius: 12,
+    width: 112,
+    height: 112,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.15)',
     backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoBadge: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoRemove: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1776,6 +1958,21 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 8,
     backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  itemIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconHit: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   productThumbEmpty: {
     width: 40,
@@ -1821,7 +2018,15 @@ const styles = StyleSheet.create({
   ghostText: { color: colors.text, fontWeight: '600', fontSize: 13 },
   linkBtn: { paddingVertical: 4 },
   linkText: { color: colors.blue, fontWeight: '700', fontSize: 13 },
-  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+  },
   tokenRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1929,6 +2134,18 @@ const styles = StyleSheet.create({
   dateText: { color: colors.text, fontSize: 13, flex: 1, fontWeight: '600' },
   dateOk: { alignSelf: 'flex-end', paddingVertical: 6, paddingHorizontal: 4 },
   kpis: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  salesKpiRow: { flexDirection: 'row', width: '100%', gap: 8 },
+  salesKpi: {
+    flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
   kpi: {
     width: '48%',
     flexGrow: 1,
@@ -1938,12 +2155,58 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 10,
   },
+  kpiFull: { width: '100%' },
   kpiAccent: { borderColor: 'rgba(0,123,255,0.35)', backgroundColor: 'rgba(0,123,255,0.12)' },
   kpiLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  kpiLabelForward: { fontSize: 22, fontWeight: '700' },
+  kpiSpread: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   kpiValue: { color: colors.text, fontSize: 15, fontWeight: '700', marginTop: 4 },
+  kpiValueCompact: { fontSize: 13 },
+  kpiValueForward: { marginTop: 0, fontSize: 22, fontWeight: '700', color: colors.blue },
   line: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, paddingVertical: 4 },
   off: { opacity: 0.45 },
-  pressed: { opacity: 0.7 },
+  tap: { backgroundColor: 'rgba(255,255,255,0.28)' },
+  editorOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 40,
+    elevation: 40,
+  },
+  itemSheet: { width: '100%', maxHeight: '100%' },
+  itemModalScroll: { flexGrow: 0 },
+  confirmToastWrap: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 24,
+    paddingBottom: 28,
+  },
+  confirmToast: {
+    backgroundColor: '#0b1730',
+    borderWidth: 1,
+    borderColor: 'rgba(0,123,255,0.45)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  confirmToastText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  confirmToastActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
   modalBg: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',

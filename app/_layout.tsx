@@ -1,9 +1,10 @@
 import { DarkTheme, ThemeProvider, type ErrorBoundaryProps, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { AppBackground, appBackground } from '@/components/AppBackground';
 import { colors } from '@/constants/theme';
 import { AuthProvider } from '@/lib/auth-context';
 import { ProducerProvider } from '@/lib/producer-context';
@@ -15,6 +16,10 @@ export const unstable_settings = {
 };
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  useEffect(() => {
+    void SplashScreen.hideAsync();
+  }, []);
+
   return (
     <View style={styles.errorScreen}>
       <Text style={styles.errorTitle}>Erro ao abrir o Terminal PDV</Text>
@@ -30,20 +35,13 @@ const navTheme = {
   ...DarkTheme,
   colors: {
     ...DarkTheme.colors,
-    background: colors.bg,
-    card: colors.bg,
+    background: 'transparent',
+    card: 'transparent',
     primary: colors.blue,
     text: colors.text,
     border: colors.border,
   },
 };
-
-function BootSplash({ children }: { children: ReactNode }) {
-  useEffect(() => {
-    void SplashScreen.hideAsync();
-  }, []);
-  return children;
-}
 
 export default function RootLayout() {
   return (
@@ -51,21 +49,21 @@ export default function RootLayout() {
       <AuthProvider>
         <ProducerProvider>
           <StatusBar style="light" />
-          <BootSplash>
-            <Stack
-              initialRouteName="index"
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.bg },
-              }}
-            >
-              <Stack.Screen name="index" />
-              <Stack.Screen name="login" />
-              <Stack.Screen name="cadastro" />
-              <Stack.Screen name="acesso" />
-              <Stack.Screen name="home" />
-            </Stack>
-          </BootSplash>
+          <AppBackground source={appBackground}>
+          <Stack
+            initialRouteName="index"
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: 'transparent' },
+            }}
+          >
+            <Stack.Screen name="index" />
+            <Stack.Screen name="login" />
+            <Stack.Screen name="cadastro" />
+            <Stack.Screen name="acesso" />
+            <Stack.Screen name="home" />
+          </Stack>
+          </AppBackground>
         </ProducerProvider>
       </AuthProvider>
     </ThemeProvider>

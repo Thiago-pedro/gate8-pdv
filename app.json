@@ -24,7 +24,7 @@
       "softwareKeyboardLayoutMode": "resize",
       "package": "club.gate8.pdv",
       "adaptiveIcon": {
-        "backgroundColor": "#050d1f",
+        "backgroundColor": "#00041D",
         "foregroundImage": "./assets/images/adaptive-icon.png"
       }
     },
@@ -33,10 +33,15 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-8.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#050d1f",
-          "imageWidth": 180
+          "image": "./assets/images/splash-pdv.jpg",
+          "resizeMode": "cover",
+          "backgroundColor": "#01020B",
+          "enableFullScreenImage_legacy": true,
+          "android": {
+            "image": "./assets/images/splash-blank.png",
+            "backgroundColor": "#01020B",
+            "imageWidth": 1
+          }
         }
       ],
       "expo-secure-store",

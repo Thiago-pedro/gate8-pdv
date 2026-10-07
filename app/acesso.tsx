@@ -42,7 +42,7 @@ export default function AcessoScreen() {
         <Text style={styles.lead}>
           O Terminal PDV usa a mesma conta do painel do produtor. Entre com um login que já tenha perfil de produtor.
         </Text>
-        <Pressable onPress={() => void leave()} style={styles.leaveWrap}>
+        <Pressable onPress={() => void leave()} style={({ pressed }) => [styles.leaveWrap, pressed && { opacity: 0.72 }]}>
           <LinearGradient colors={['#007BFF', '#0056b3']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.leave}>
             <Text style={styles.leaveText}>Sair</Text>
           </LinearGradient>

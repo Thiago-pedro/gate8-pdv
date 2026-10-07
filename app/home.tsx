@@ -3,12 +3,14 @@ import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Dimensions, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { appBackground } from '@/components/AppBackground';
 import { Loader } from '@/components/Loader';
 import { NeonCard } from '@/components/NeonCard';
 import { PdvSection } from '@/components/PdvSection';
+import { ScreenOverlay } from '@/components/screen-overlay';
 import { SiteFooter } from '@/components/SiteFooter';
 import { Wordmark } from '@/components/Wordmark';
 import { colors } from '@/constants/theme';
@@ -62,19 +64,22 @@ export default function HomeScreen() {
   if (loading || producerLoading || !user || status !== 'producer') {
     return (
       <View style={styles.boot}>
+        <Image source={appBackground} resizeMode="cover" fadeDuration={0} style={StyleSheet.absoluteFill} />
         <Loader screen />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    <View style={styles.safe}>
+      <Image source={appBackground} resizeMode="cover" fadeDuration={0} style={StyleSheet.absoluteFill} />
+      <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <Wordmark height={36} />
         <Pressable
           onPress={() => setLeaveOpen(true)}
           hitSlop={12}
-          style={styles.exitBtn}
+          style={({ pressed }) => [styles.exitBtn, pressed && styles.pressed]}
           accessibilityRole="button"
           accessibilityLabel="Sair"
         >
@@ -120,10 +125,10 @@ export default function HomeScreen() {
               <Text style={styles.modalTitle}>Sair da conta</Text>
               <Text style={styles.modalText}>Deseja sair do Terminal PDV?</Text>
               <View style={styles.modalActions}>
-                <Pressable onPress={() => setLeaveOpen(false)} style={styles.modalCancel}>
+                <Pressable onPress={() => setLeaveOpen(false)} style={({ pressed }) => [styles.modalCancel, pressed && styles.pressed]}>
                   <Text style={styles.modalCancelText}>Cancelar</Text>
                 </Pressable>
-                <Pressable onPress={() => void leaveAccount()} style={styles.modalLeaveWrap}>
+                <Pressable onPress={() => void leaveAccount()} style={({ pressed }) => [styles.modalLeaveWrap, pressed && { opacity: 0.72 }]}>
                   <LinearGradient
                     colors={['#007BFF', '#0056b3']}
                     start={{ x: 0, y: 0 }}
@@ -138,20 +143,22 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+      <ScreenOverlay />
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: 'transparent',
   },
   boot: {
     flex: 1,
     minHeight: Dimensions.get('window').height,
     width: '100%',
-    backgroundColor: colors.bg,
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -170,7 +177,8 @@ const styles = StyleSheet.create({
     top: 12,
     height: 36,
     justifyContent: 'center',
-    paddingLeft: 8,
+    paddingHorizontal: 8,
+    borderRadius: 10,
   },
   hello: {
     color: colors.text,
@@ -209,7 +217,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   pressed: {
-    opacity: 0.86,
+    backgroundColor: 'rgba(255,255,255,0.28)',
   },
   list: {
     flexGrow: 1,

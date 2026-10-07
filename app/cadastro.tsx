@@ -90,10 +90,14 @@ function SignupForm() {
             <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.muted} />
           </Pressable>
         </View>
-        <Pressable onPress={() => void submit()} disabled={busy} style={styles.button}>
+        <Pressable
+          onPress={() => void submit()}
+          disabled={busy}
+          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+        >
           {busy ? <Loader size={22} color={colors.loginText} /> : <Text style={styles.buttonText}>Criar conta</Text>}
         </Pressable>
-        <Pressable onPress={() => router.replace('/login')} style={styles.signupWrap}>
+        <Pressable onPress={() => router.replace('/login')} style={({ pressed }) => [styles.signupWrap, pressed && styles.pressed]}>
           <Text style={styles.signupMuted}>Já tem conta?</Text>
           <Text style={styles.signupLink}>Entrar</Text>
         </Pressable>
@@ -199,7 +203,11 @@ const styles = StyleSheet.create({
     marginTop: 18,
     alignItems: 'center',
     gap: 4,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
+  pressed: { backgroundColor: 'rgba(255,255,255,0.28)' },
   signupMuted: {
     color: colors.muted,
     fontSize: 13,

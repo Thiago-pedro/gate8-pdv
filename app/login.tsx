@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { loginBackground } from '@/components/AppBackground';
 import { AuthScreenShell, useAuthKeyboard } from '@/components/AuthScreenShell';
 import { Logo } from '@/components/Logo';
 import { NeonCard } from '@/components/NeonCard';
@@ -40,8 +41,8 @@ function LoginForm() {
   return (
     <>
       <View style={[styles.logoWrap, keyboardOpen && styles.logoWrapCompact]}>
-        <Logo height={keyboardOpen ? 40 : 56} centered />
-        <Text style={styles.brand}>PDV</Text>
+        <Logo height={keyboardOpen ? 50 : 81} centered />
+        <Text style={[styles.brand, { marginTop: keyboardOpen ? -14 : -24 }]}>PDV</Text>
       </View>
       <NeonCard>
         <Text style={styles.title}>Entrar</Text>
@@ -53,9 +54,12 @@ function LoginForm() {
           onChangeText={setEmail}
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="off"
+          importantForAutofill="no"
           keyboardType="email-address"
           placeholder="voce@email.com"
           placeholderTextColor="rgba(255,255,255,0.28)"
+          cursorColor={colors.text}
           style={styles.input}
         />
         <Text style={styles.label}>SENHA</Text>
@@ -73,10 +77,14 @@ function LoginForm() {
             <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.muted} />
           </Pressable>
         </View>
-        <Pressable onPress={() => void submit()} disabled={busy} style={styles.button}>
+        <Pressable
+          onPress={() => void submit()}
+          disabled={busy}
+          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+        >
           {busy ? <ActivityIndicator color={colors.loginText} /> : <Text style={styles.buttonText}>Entrar</Text>}
         </Pressable>
-        <Pressable onPress={() => router.push('/cadastro')} style={styles.signupWrap}>
+        <Pressable onPress={() => router.push('/cadastro')} style={({ pressed }) => [styles.signupWrap, pressed && styles.pressed]}>
           <Text style={styles.signupMuted}>Ainda não é cliente Gate8?</Text>
           <Text style={styles.signupLink}>Crie sua conta de produtor aqui</Text>
         </Pressable>
@@ -96,7 +104,7 @@ export default function LoginScreen() {
   }, [loading, producerLoading, router, status, user]);
 
   return (
-    <AuthScreenShell>
+    <AuthScreenShell background={loginBackground}>
       <LoginForm />
     </AuthScreenShell>
   );
@@ -111,10 +119,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   brand: {
-    color: colors.blue,
+    color: '#B3B5C0',
     fontWeight: '800',
     letterSpacing: 4,
-    marginTop: 10,
     fontSize: 13,
   },
   title: {
@@ -141,7 +148,7 @@ const styles = StyleSheet.create({
   },
   input: {
     color: colors.text,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: '#111E2E',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 12,
@@ -177,7 +184,11 @@ const styles = StyleSheet.create({
     marginTop: 18,
     alignItems: 'center',
     gap: 4,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
+  pressed: { backgroundColor: 'rgba(255,255,255,0.28)' },
   signupMuted: {
     color: colors.muted,
     fontSize: 13,

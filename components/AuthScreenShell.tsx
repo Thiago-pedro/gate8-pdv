@@ -1,18 +1,19 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Dimensions,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   View,
+  type ImageSourcePropType,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { appBackground } from '@/components/AppBackground';
 import { SiteFooter } from '@/components/SiteFooter';
-import { colors } from '@/constants/theme';
 
 type AuthKeyboardValue = {
   keyboardOpen: boolean;
@@ -31,9 +32,11 @@ export function useAuthKeyboard() {
 export function AuthScreenShell({
   children,
   header,
+  background,
 }: {
   children: ReactNode;
   header?: ReactNode;
+  background?: ImageSourcePropType;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const offsetY = useRef(0);
@@ -89,8 +92,10 @@ export function AuthScreenShell({
   return (
     <AuthKeyboardContext.Provider value={{ keyboardOpen, ensureVisible }}>
       <View style={styles.root}>
-        <LinearGradient
-          colors={['rgba(0, 123, 255, 0.22)', colors.bg, colors.bg]}
+        <Image
+          source={background ?? appBackground}
+          resizeMode="cover"
+          fadeDuration={0}
           style={StyleSheet.absoluteFill}
         />
         <KeyboardAvoidingView
@@ -128,7 +133,7 @@ export function AuthScreenShell({
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: 'transparent',
   },
   content: {
     flexGrow: 1,
