@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 
 import { getAccessToken, getAuthUser } from '@/lib/auth';
@@ -735,11 +736,11 @@ function productPayload(convenienceId: string, product: ProductInput) {
 async function writeProduct(convenienceId: string, product: ProductInput) {
   const payload = productPayload(convenienceId, product);
   try {
-    await callServerFn(FN.saveProduct, payload);
+    return await callServerFn(FN.saveProduct, payload);
   } catch (error) {
     const { stock_control: _stockControl, ...withoutExtra } = payload;
     try {
-      await callServerFn(FN.saveProduct, withoutExtra);
+      return await callServerFn(FN.saveProduct, withoutExtra);
     } catch {
       throw error;
     }
@@ -753,12 +754,118 @@ async function loadProductRows() {
 
 export async function fetchProducts(convenienceId: string): Promise<PdvProduct[]> {
   const rows = await loadProductRows();
-  return rows.map(mapProduct).filter((item) => item.convenienceId === convenienceId);
+  const images = await readProductImages();
+  return rows
+    .map(mapProduct)
+    .filter((item) => item.convenienceId === convenienceId)
+    .map((item) => ({ ...item, imageUrl: item.imageUrl || images[item.id] || null }));
+}
+
+function productIdFromSave(raw: unknown): string {
+  const row = asObject(raw);
+  if (!row) return '';
+  const direct = text(row.id).trim();
+  if (direct) return direct;
+  for (const key of ['product', 'item', 'data']) {
+    const nested = asObject(row[key]);
+    const id = nested ? text(nested.id).trim() : '';
+    if (id) return id;
+  }
+  return '';
 }
 
 export async function saveProduct(convenienceId: string, product: ProductInput) {
-  await writeProduct(convenienceId, product);
-  if (product.id) await rememberProductOwner(product.id, convenienceId);
+  const saved = await writeProduct(convenienceId, product);
+  const imageUrl = product.imageUrl?.trim() || '';
+  let id = product.id || productIdFromSave(saved);
+  if (!id && imageUrl) {
+    const rows = await loadProductRows();
+    const matches = rows
+      .map(mapProduct)
+      .filter((item) => item.convenienceId === convenienceId && item.name === product.name.trim());
+    id = matches.filter((item) => !item.imageUrl).at(-1)?.id || matches.at(-1)?.id || '';
+  }
+  if (id) await rememberProductOwner(id, convenienceId);
+  if (!id || !imageUrl) return;
+  await rememberProductImage(id, imageUrl);
+  try {
+    await patchProductImage(id, imageUrl);
+  } catch (error) {
+    const rows = await loadProductRows();
+    const stored = rows.map(mapProduct).find((item) => item.id === id)?.imageUrl;
+    if (!stored) throw error;
+  }
+}
+
+async function patchProductImage(id: string, imageUrl: string) {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Faça login para continuar.');
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/products?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify({ image_url: imageUrl }),
+  });
+  const raw = await response.text();
+  let message = 'A foto não ficou gravada no item.';
+  let rows: unknown = null;
+  try {
+    rows = raw ? (JSON.parse(raw) as unknown) : null;
+  } catch {
+    rows = null;
+  }
+  if (!response.ok) {
+    const parsed = asObject(rows);
+    message = text(parsed?.message || parsed?.error) || message;
+    throw new Error(message);
+  }
+  if (Array.isArray(rows) && rows.length === 0) throw new Error(message);
+}
+
+const PRODUCT_IMAGE_FILE = 'pdv-product-images.json';
+
+function productImageFile() {
+  const dir = FileSystem.documentDirectory;
+  return dir ? `${dir}${PRODUCT_IMAGE_FILE}` : null;
+}
+
+async function readProductImages() {
+  try {
+    const file = productImageFile();
+    if (!file) return {} as Record<string, string>;
+    const info = await FileSystem.getInfoAsync(file);
+    if (!info.exists) return {} as Record<string, string>;
+    const parsed = JSON.parse(await FileSystem.readAsStringAsync(file)) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {} as Record<string, string>;
+    const images: Record<string, string> = {};
+    for (const [id, url] of Object.entries(parsed)) {
+      if (typeof url === 'string' && url.trim()) images[id] = url.trim();
+    }
+    return images;
+  } catch {
+    return {} as Record<string, string>;
+  }
+}
+
+async function rememberProductImage(productId: string, imageUrl: string) {
+  const file = productImageFile();
+  if (!file || !productId || !imageUrl) return;
+  const images = await readProductImages();
+  images[productId] = imageUrl;
+  await FileSystem.writeAsStringAsync(file, JSON.stringify(images));
+}
+
+async function forgetProductImage(productId: string) {
+  const file = productImageFile();
+  if (!file) return;
+  const images = await readProductImages();
+  if (!images[productId]) return;
+  delete images[productId];
+  await FileSystem.writeAsStringAsync(file, JSON.stringify(images));
 }
 
 export async function uploadProductImage(uri: string, contentType: string) {
@@ -767,29 +874,38 @@ export async function uploadProductImage(uri: string, contentType: string) {
   if (!user?.id) throw new Error('Sessão expirada. Entre novamente.');
   const token = await getAccessToken();
   if (!token) throw new Error('Faça login para continuar.');
-  const file = await fetch(uri);
-  const blob = await file.blob();
-  if (blob.size > MAX_IMAGE_BYTES) throw new Error('Imagem muito grande. Máx 5MB.');
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (info.exists && 'size' in info && typeof info.size === 'number' && info.size > MAX_IMAGE_BYTES) {
+      throw new Error('Imagem muito grande. Máx 5MB.');
+    }
+  } catch (caught) {
+    if (caught instanceof Error && caught.message.includes('Máx 5MB')) throw caught;
+  }
   const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
-  const path = `${user.id}/pdv-products/${crypto.randomUUID()}.${ext}`;
-  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/event-banners/${path}`, {
-    method: 'POST',
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${token}`,
-      'Content-Type': contentType || blob.type || 'image/jpeg',
-      'x-upsert': 'false',
-    },
-    body: blob,
-  });
-  const raw = await response.text();
-  if (!response.ok) {
+  const fileId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  const path = `${user.id}/pdv-products/${fileId}.${ext}`;
+  const uploaded = await FileSystem.uploadAsync(
+    `${SUPABASE_URL}/storage/v1/object/event-banners/${path}`,
+    uri,
+    {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType || 'image/jpeg',
+        'x-upsert': 'false',
+      },
+    }
+  );
+  if (uploaded.status < 200 || uploaded.status >= 300) {
     let message = 'Falha ao enviar a foto do produto.';
     try {
-      const parsed = JSON.parse(raw) as { message?: string; error?: string };
+      const parsed = JSON.parse(uploaded.body) as { message?: string; error?: string };
       message = parsed.message || parsed.error || message;
     } catch {
-      /* keep default */
+      if (uploaded.body && uploaded.body.length < 220) message = uploaded.body;
     }
     throw new Error(message);
   }
@@ -799,6 +915,7 @@ export async function uploadProductImage(uri: string, contentType: string) {
 export async function deleteProduct(id: string) {
   await callServerFn(FN.deleteProduct, { id });
   await forgetProductOwner(id);
+  await forgetProductImage(id);
 }
 
 export async function moveStock(productId: string, delta: number, inbound: boolean) {

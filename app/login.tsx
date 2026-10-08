@@ -41,7 +41,9 @@ function LoginForm() {
   return (
     <>
       <View style={[styles.logoWrap, keyboardOpen && styles.logoWrapCompact]}>
-        <Logo height={keyboardOpen ? 50 : 81} centered />
+        <View style={styles.logoLift}>
+          <Logo height={keyboardOpen ? 50 : 81} centered />
+        </View>
         <Text style={[styles.brand, { marginTop: keyboardOpen ? -14 : -24 }]}>PDV</Text>
       </View>
       <NeonCard>
@@ -117,6 +119,10 @@ const styles = StyleSheet.create({
   },
   logoWrapCompact: {
     marginBottom: 16,
+  },
+  logoLift: {
+    marginTop: -13,
+    marginBottom: 13,
   },
   brand: {
     color: '#B3B5C0',

@@ -8,7 +8,7 @@ import { useScreenOverlay } from '@/components/screen-overlay';
 
 import { Loader } from '@/components/Loader';
 import { colors } from '@/constants/theme';
-import { formatBRL, formatDateTime, formatEventDateTime } from '@/lib/format';
+import { formatBRL, formatDateTime, formatEventDateTime, formatMoneyInput, parseMoneyInput, sanitizeMoneyInput } from '@/lib/format';
 import {
   CASHLESS_TX_LABELS,
   PAYMENT_LABELS,
@@ -973,6 +973,17 @@ function Kpi({
   );
 }
 
+function CashMetric({ label, value, valueStyle }: { label: string; value: string; valueStyle?: object }) {
+  return (
+    <View style={styles.cashMetric}>
+      <Text style={styles.cashMetricLabel}>{label}</Text>
+      <Text style={[styles.cashMetricValue, valueStyle]} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function CashierPane({ convenienceId, nonce }: { convenienceId: string; nonce: number }) {
   const [status, setStatus] = useState<'all' | 'open' | 'closed'>('all');
   const [rows, setRows] = useState<PdvCashierSession[]>([]);
@@ -1028,32 +1039,50 @@ function CashierPane({ convenienceId, nonce }: { convenienceId: string; nonce: n
         grouped.map(([deviceId, sessions]) => (
           <View key={deviceId} style={styles.gap}>
             <Text style={styles.group}>{sessions[0]?.deviceName}</Text>
-            {sessions.map((session) => (
-              <View key={session.id} style={styles.card}>
-                <Text style={[styles.badge, session.status === 'open' ? styles.badgeOn : styles.badgeOff]}>
-                  {session.status === 'open' ? 'aberto' : 'fechado'}
-                </Text>
-                <Text style={styles.meta}>Aberto {formatDateTime(session.openedAt) || '—'}</Text>
-                <Text style={styles.meta}>Fechado {formatDateTime(session.closedAt) || '—'}</Text>
-                <Text style={styles.meta}>
-                  Troco {formatBRL(session.openingBalance)} →{' '}
-                  {session.counted == null ? '—' : formatBRL(session.counted)}
-                </Text>
-                {session.expected != null ? (
-                  <Text style={styles.meta}>Esperado: {formatBRL(session.expected)}</Text>
-                ) : null}
-                {session.cashSales ? (
-                  <Text style={styles.meta}>
-                    Vendas cash: {formatBRL(session.cashSales)}
-                    {session.withdrawals > 0 ? ` · Sangria: ${formatBRL(session.withdrawals)}` : ''}
-                    {session.expenses > 0 ? ` · Despesas: ${formatBRL(session.expenses)}` : ''}
-                  </Text>
-                ) : null}
-                <Text style={styles.meta}>
-                  Diferença {session.difference == null ? '—' : formatBRL(session.difference)}
-                </Text>
-              </View>
-            ))}
+            {sessions.map((session) => {
+              const open = session.status === 'open';
+              const opened = formatDateTime(session.openedAt) || '—';
+              const closed = formatDateTime(session.closedAt);
+              const movement = [
+                session.cashSales ? `Vendas ${formatBRL(session.cashSales)}` : null,
+                session.withdrawals > 0 ? `Sangria ${formatBRL(session.withdrawals)}` : null,
+                session.expenses > 0 ? `Despesas ${formatBRL(session.expenses)}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <View key={session.id} style={styles.saleCard}>
+                  <View style={styles.rowBetween}>
+                    <View style={styles.cashWhen}>
+                      <Text style={[styles.badge, open ? styles.badgeOn : styles.badgeOff]}>
+                        {open ? 'aberto' : 'fechado'}
+                      </Text>
+                      <Text style={styles.saleDate} numberOfLines={1}>
+                        {opened}
+                      </Text>
+                    </View>
+                    {!open && closed ? <Text style={styles.saleDate}>→ {closed}</Text> : null}
+                  </View>
+                  <View style={styles.cashMetrics}>
+                    <CashMetric label="Troco" value={formatBRL(session.openingBalance)} />
+                    <CashMetric label="Contado" value={session.counted == null ? '—' : formatBRL(session.counted)} />
+                    <CashMetric label="Esperado" value={session.expected == null ? '—' : formatBRL(session.expected)} />
+                    <CashMetric
+                      label="Diferença"
+                      value={session.difference == null ? '—' : formatBRL(session.difference)}
+                      valueStyle={
+                        session.difference == null || session.difference === 0 ? styles.cashOk : styles.cashOff
+                      }
+                    />
+                  </View>
+                  {movement ? (
+                    <Text style={styles.saleLine} numberOfLines={1}>
+                      {movement}
+                    </Text>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         ))
       )}
@@ -1073,6 +1102,8 @@ function ItemsPane({
   const [items, setItems] = useState<PdvProduct[]>([]);
   const [busy, setBusy] = useState(true);
   const [editing, setEditing] = useState<Partial<PdvProduct> | null>(null);
+  const [priceText, setPriceText] = useState('');
+  const [costText, setCostText] = useState('');
   const [pendingImage, setPendingImage] = useState<{ uri: string; type: string } | null>(null);
   const [savingItem, setSavingItem] = useState(false);
   const [stockItem, setStockItem] = useState<PdvProduct | null>(null);
@@ -1134,6 +1165,8 @@ function ItemsPane({
 
   function openEditor(item: Partial<PdvProduct>) {
     setPendingImage(null);
+    setPriceText(formatMoneyInput(item.price));
+    setCostText(formatMoneyInput(item.cost));
     setEditing(item);
   }
 
@@ -1267,8 +1300,8 @@ function ItemsPane({
               <View style={styles.inlineField}>
                 <Text style={styles.inlineLabel}>Preço de venda</Text>
                 <TextInput
-                  value={editing && editing.price ? String(editing.price) : ''}
-                  onChangeText={(value) => setEditing((current) => ({ ...current, price: Number(value.replace(',', '.')) || 0 }))}
+                  value={priceText}
+                  onChangeText={(value) => setPriceText(sanitizeMoneyInput(value))}
                   placeholder="0,00"
                   keyboardType="decimal-pad"
                   placeholderTextColor="rgba(255,255,255,0.32)"
@@ -1278,8 +1311,8 @@ function ItemsPane({
               <View style={styles.inlineField}>
                 <Text style={styles.inlineLabel}>Custo</Text>
                 <TextInput
-                  value={editing && editing.cost ? String(editing.cost) : ''}
-                  onChangeText={(value) => setEditing((current) => ({ ...current, cost: Number(value.replace(',', '.')) || 0 }))}
+                  value={costText}
+                  onChangeText={(value) => setCostText(sanitizeMoneyInput(value))}
                   placeholder="0,00"
                   keyboardType="decimal-pad"
                   placeholderTextColor="rgba(255,255,255,0.32)"
@@ -1349,8 +1382,8 @@ function ItemsPane({
                         category: editing.category ?? '',
                         sku: editing.sku ?? '',
                         description: editing.description ?? '',
-                        price: editing.price ?? 0,
-                        cost: editing.cost ?? 0,
+                        price: parseMoneyInput(priceText),
+                        cost: parseMoneyInput(costText),
                         active: editing.active !== false,
                         trackStock: !!editing.trackStock,
                         stock: editing.stock ?? 0,
@@ -1903,6 +1936,13 @@ const styles = StyleSheet.create({
   saleDetail: { flex: 1 },
   saleFoot: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', gap: 8 },
   salePercent: { color: colors.muted, fontSize: 12, fontWeight: '700', lineHeight: 16 },
+  cashWhen: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
+  cashMetrics: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginTop: 4 },
+  cashMetric: { flex: 1, minWidth: 0 },
+  cashMetricLabel: { color: colors.muted, fontSize: 10, fontWeight: '600' },
+  cashMetricValue: { color: colors.text, fontSize: 12, fontWeight: '700', lineHeight: 16 },
+  cashOk: { color: '#4ade80' },
+  cashOff: { color: colors.danger },
   card: {
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
