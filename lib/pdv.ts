@@ -538,11 +538,45 @@ export function saleFeePercentLabel(fee: PdvFee | null, method?: string) {
   return `${rate}%`;
 }
 
+function toCents(value: number) {
+  return Math.round(value * 100);
+}
+
 export function storedFeeTotal(sales: PdvSale[], saleCount: number) {
   if (sales.length < saleCount) return null;
   const active = sales.filter((sale) => !sale.voided);
   if (active.some((sale) => !sale.fee)) return null;
-  return Math.round(active.reduce((sum, sale) => sum + (sale.fee?.amount ?? 0), 0) * 100) / 100;
+  const cents = active.reduce((sum, sale) => sum + toCents(sale.fee?.amount ?? 0), 0);
+  return cents / 100;
+}
+
+export function salesMoney(sales: PdvSale[]) {
+  const active = sales.filter((sale) => !sale.voided);
+  let grossCents = 0;
+  const buckets = new Map<string, { count: number; cents: number }>();
+  for (const sale of active) {
+    grossCents += toCents(sale.amount);
+    const parts =
+      sale.payments.length > 0
+        ? sale.payments.map((part) => ({
+            method: part.method || sale.method || 'other',
+            amount: part.amount,
+          }))
+        : [{ method: sale.method || 'other', amount: sale.amount }];
+    for (const part of parts) {
+      const bucket = buckets.get(part.method) ?? { count: 0, cents: 0 };
+      bucket.count += 1;
+      bucket.cents += toCents(part.amount);
+      buckets.set(part.method, bucket);
+    }
+  }
+  return {
+    count: active.length,
+    gross: grossCents / 100,
+    byMethod: [...buckets.entries()]
+      .map(([method, row]) => ({ method, count: row.count, amount: row.cents / 100 }))
+      .sort((left, right) => right.amount - left.amount),
+  };
 }
 
 function mapPayments(value: unknown): PdvSalePayment[] {
@@ -633,22 +667,60 @@ export function saleMatchesMethod(sale: Pick<PdvSale, 'method' | 'payments'>, me
   return keys.includes(sale.method);
 }
 
-export async function fetchSales(input: {
-  convenienceId: string;
-  from: string;
-  to: string;
-  deviceId?: string | null;
-  paymentMethod?: string | null;
-}): Promise<PdvSale[]> {
+const SALES_PAGE = 200;
+
+async function fetchSalesPage(
+  input: {
+    convenienceId: string;
+    from: string;
+    to: string;
+    deviceId?: string | null;
+    paymentMethod?: string | null;
+  },
+  offset: number
+) {
   const raw = await callServerFn<unknown>(FN.sales, {
     from: input.from,
     to: input.to,
     device_id: input.deviceId || null,
     payment_method: input.paymentMethod || null,
     convenience_id: input.convenienceId,
-    limit: 200,
+    limit: SALES_PAGE,
+    offset,
   });
   return asRows(pick(raw, 'sales')).map(mapSale);
+}
+
+export async function fetchSales(input: {
+  convenienceId: string;
+  from: string;
+  to: string;
+  deviceId?: string | null;
+  paymentMethod?: string | null;
+}): Promise<{ sales: PdvSale[]; complete: boolean }> {
+  const seen = new Set<string>();
+  const sales: PdvSale[] = [];
+  let offset = 0;
+
+  for (let guard = 0; guard < 100; guard += 1) {
+    const page = await fetchSalesPage(input, offset);
+    if (page.length === 0) return { sales, complete: true };
+
+    let added = 0;
+    for (const sale of page) {
+      const id = sale.id || `${sale.createdAt}|${sale.amount}|${sale.nsu}|${sale.authorization}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      sales.push(sale);
+      added += 1;
+    }
+
+    if (page.length < SALES_PAGE) return { sales, complete: true };
+    if (added === 0) return { sales, complete: false };
+    offset += page.length;
+  }
+
+  return { sales, complete: false };
 }
 
 export async function fetchSalesSummary(input: {

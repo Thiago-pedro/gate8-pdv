@@ -16,6 +16,7 @@ import {
   saleBadgeLabel,
   saleFeePercentLabel,
   saleMatchesMethod,
+  salesMoney,
   storedFeeTotal,
   archiveConvenience,
   createConvenience,
@@ -709,7 +710,7 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
         fetchSalesSummary({ convenienceId, from: range.from, to: range.to, deviceId: deviceId || null }),
         fetchDevices(convenienceId),
       ]);
-      setSales(rows);
+      setSales(rows.sales);
       setSummary(totals);
       setDevices(machineList);
       setPage(0);
@@ -753,10 +754,22 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
     });
   }, [sales, query, method]);
 
+  const money = useMemo(() => salesMoney(sales), [sales]);
+  const useEachSale = !summary || money.count >= summary.saleCount;
+  const counted = useEachSale
+    ? money
+    : {
+        count: summary.saleCount,
+        gross: summary.gross,
+        byMethod: summary.byMethod,
+      };
   const storedFee = useMemo(
-    () => (summary ? storedFeeTotal(sales, summary.saleCount) : null),
-    [sales, summary]
+    () => (useEachSale ? storedFeeTotal(sales, money.count) : null),
+    [money.count, sales, useEachSale]
   );
+  const feeAmount = storedFee ?? (summary ? summary.bank + summary.gate8 : 0);
+  const netAmount =
+    storedFee != null ? counted.gross - storedFee : summary && !useEachSale ? summary.net : counted.gross - feeAmount;
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   const current = Math.min(page, pages - 1);
   const paged = filtered.slice(current * 8, current * 8 + 8);
@@ -848,37 +861,35 @@ function SalesPane({ convenienceId, nonce }: { convenienceId: string; nonce: num
         </View>
       ) : (
         <>
-          {summary ? (
+          {summary || money.count > 0 ? (
             <View style={styles.gap}>
               <View style={styles.salesKpiRow}>
-                <Kpi label="Vendas" value={String(summary.saleCount)} flex />
-                <Kpi label="Bruto" value={formatBRL(summary.gross)} flex />
-                <Kpi
-                  label="Taxa Gate8"
-                  value={`- ${formatBRL(storedFee ?? summary.bank + summary.gate8)}`}
-                  flex
-                />
+                <Kpi label="Vendas" value={String(counted.count)} flex />
+                <Kpi label="Bruto" value={formatBRL(counted.gross)} flex />
+                <Kpi label="Taxa Gate8" value={`- ${formatBRL(feeAmount)}`} flex />
               </View>
-              <Kpi
-                label="Líquido"
-                value={formatBRL(storedFee != null ? summary.gross - storedFee : summary.net)}
-                accent
-                spread
-              />
+              <Kpi label="Líquido" value={formatBRL(netAmount)} accent spread />
             </View>
           ) : null}
-          {summary?.byMethod.length ? (
-            <View style={styles.card}>
-              <Text style={styles.group}>Vendas por forma de pagamento</Text>
-              {summary.byMethod.map((item) => (
-                <View key={item.method} style={styles.line}>
-                  <Text style={styles.meta}>
-                    {PAYMENT_LABELS[item.method] ?? item.method} · {item.count}
-                  </Text>
-                  <Text style={styles.meta}>{formatBRL(item.amount)}</Text>
-                </View>
+          {counted.byMethod.length ? (
+            <View style={styles.payRow} accessibilityLabel="Vendas por forma de pagamento">
+              {counted.byMethod.map((item) => (
+                <Text
+                  key={item.method}
+                  style={styles.payCell}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.7}
+                >
+                  {PAYMENT_LABELS[item.method] ?? item.method} · {item.count} · {formatBRL(item.amount)}
+                </Text>
               ))}
             </View>
+          ) : null}
+          {summary && money.count < summary.saleCount ? (
+            <Text style={styles.meta}>
+              Os totais contam as {summary.saleCount} vendas do período.
+            </Text>
           ) : null}
           {paged.map((sale) => {
             const place = [sale.deviceName !== '—' ? sale.deviceName : '', sale.operator].filter(Boolean).join(' · ');
@@ -2251,6 +2262,25 @@ const styles = StyleSheet.create({
   kpiValue: { color: colors.text, fontSize: 15, fontWeight: '700', marginTop: 4 },
   kpiValueCompact: { fontSize: 13 },
   kpiValueForward: { marginTop: 0, fontSize: 22, fontWeight: '700', color: colors.blue },
+  payRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  payCell: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
   line: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, paddingVertical: 4 },
   off: { opacity: 0.45 },
   tap: { backgroundColor: 'rgba(255,255,255,0.28)' },
