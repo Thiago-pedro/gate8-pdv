@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 
+import { siteUrl } from '@/constants/theme';
 import { getAccessToken, getAuthUser } from '@/lib/auth';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/lib/config';
 import { formatBRL } from '@/lib/format';
@@ -172,21 +173,67 @@ function enabledFlag(value: unknown) {
   return null;
 }
 
+function absoluteImage(value: string) {
+  const url = value.trim();
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url) || url.startsWith('file:')) return url;
+  return null;
+}
+
+function urlFrom(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return urlFrom(JSON.parse(trimmed) as unknown);
+      } catch {
+        return absoluteImage(trimmed);
+      }
+    }
+    return absoluteImage(trimmed);
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const url = urlFrom(item);
+      if (url) return url;
+    }
+    return null;
+  }
+  const nested = asObject(value);
+  if (!nested) return null;
+  for (const key of ['url', 'public_url', 'publicUrl', 'src', 'image_url', 'signed_url', 'signedUrl', 'path']) {
+    const url = urlFrom(nested[key]);
+    if (url) return url;
+  }
+  return null;
+}
+
 function productImage(row: Row) {
   const candidates = [
+    row.image_signed_url,
+    row.imageSignedUrl,
+    row.signed_url,
+    row.signedUrl,
     row.image_url,
     row.imageUrl,
+    row.imageURL,
     row.image,
     row.photo_url,
     row.photo,
     row.picture_url,
     row.thumbnail_url,
     row.thumb_url,
+    row.banner_url,
+    row.cover_url,
+    row.media,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-    const nested = asObject(candidate);
-    const url = nested ? text(nested.url || nested.public_url || nested.src || nested.image_url).trim() : '';
+    const url = urlFrom(candidate);
+    if (url) return url;
+  }
+  for (const [key, value] of Object.entries(row)) {
+    if (!/image|photo|picture|thumb|banner|cover|avatar|media|file/i.test(key)) continue;
+    const url = urlFrom(value);
     if (url) return url;
   }
   return null;
@@ -752,13 +799,156 @@ async function loadProductRows() {
   return asRows(pick(raw, 'products'));
 }
 
-export async function fetchProducts(convenienceId: string): Promise<PdvProduct[]> {
+async function loadStoredProductImages(ids: string[]) {
+  const images: Record<string, string> = {};
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return images;
+  try {
+    const token = await getAccessToken();
+    if (!token) return images;
+    const list = unique.map((id) => encodeURIComponent(id)).join(',');
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/products?select=id,image_url&id=in.(${list})`,
+      {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+    if (!response.ok) return images;
+    const rows = asRows(await response.json());
+    for (const row of rows) {
+      const id = text(row.id);
+      const url = productImage(row);
+      if (id && url) images[id] = url;
+    }
+  } catch {
+    return images;
+  }
+  return images;
+}
+
+const CATALOG_TOKEN_KEY = 'gate8.pdv.catalogDeviceTokens';
+
+async function readCatalogTokens() {
+  try {
+    const raw = await SecureStore.getItemAsync(CATALOG_TOKEN_KEY);
+    if (!raw) return {} as Record<string, string>;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {} as Record<string, string>;
+    const tokens: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string' && value.trim()) tokens[key] = value.trim();
+    }
+    return tokens;
+  } catch {
+    return {} as Record<string, string>;
+  }
+}
+
+async function rememberCatalogToken(posToken: string, deviceToken: string) {
+  const tokens = await readCatalogTokens();
+  tokens[posToken] = deviceToken;
+  await SecureStore.setItemAsync(CATALOG_TOKEN_KEY, JSON.stringify(tokens));
+}
+
+async function catalogImages(deviceToken: string) {
+  const images = { byId: {} as Record<string, string>, byName: {} as Record<string, string> };
+  const response = await fetch(`${siteUrl}/api/public/pos/catalog`, {
+    headers: {
+      Authorization: `Bearer ${deviceToken}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) return { images, status: response.status };
+  const raw = (await response.json()) as unknown;
+  const products = asRows(pick(raw, 'products'));
+  for (const row of products) {
+    const url = productImage(row);
+    if (!url) continue;
+    const id = text(row.id).trim();
+    const name = text(row.name).trim().toLowerCase();
+    if (id) images.byId[id] = url;
+    if (name) images.byName[name] = url;
+  }
+  return { images, status: response.status };
+}
+
+async function loginCatalogToken(posToken: string) {
+  const response = await fetch(`${siteUrl}/api/public/pos/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ token: posToken, fingerprint: `gate8pdv-${posToken}` }),
+  });
+  const body = asObject(await response.json().catch(() => null));
+  const deviceToken = text(body?.device_token).trim();
+  if (text(body?.status) !== 'active' || !deviceToken) return null;
+  await rememberCatalogToken(posToken, deviceToken);
+  return deviceToken;
+}
+
+async function tokenFromDevices(convenienceId: string) {
+  try {
+    const raw = await callServerFn<unknown>(FN.devices, { convenience_id: convenienceId });
+    for (const row of asRows(pick(raw, 'devices'))) {
+      if (text(row.status).toLowerCase() === 'disabled') continue;
+      const token = text(row.device_token || row.access_token).trim();
+      if (token.length >= 16) return token;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function catalogHasImages(images: { byId: Record<string, string>; byName: Record<string, string> }) {
+  return Object.keys(images.byId).length > 0 || Object.keys(images.byName).length > 0;
+}
+
+async function loadCatalogImages(posToken: string | null, convenienceId: string) {
+  const empty = { byId: {} as Record<string, string>, byName: {} as Record<string, string> };
+  const token = posToken?.trim() || '';
+  if (!token) return empty;
+  try {
+    const known = (await readCatalogTokens())[token] || (await tokenFromDevices(convenienceId));
+    if (known) {
+      const cached = await catalogImages(known);
+      if (catalogHasImages(cached.images)) {
+        await rememberCatalogToken(token, known);
+        return cached.images;
+      }
+    }
+    const deviceToken = await loginCatalogToken(token);
+    if (!deviceToken) return empty;
+    const fresh = await catalogImages(deviceToken);
+    return catalogHasImages(fresh.images) ? fresh.images : empty;
+  } catch {
+    return empty;
+  }
+}
+
+export async function fetchProducts(convenienceId: string, posToken?: string | null): Promise<PdvProduct[]> {
   const rows = await loadProductRows();
-  const images = await readProductImages();
+  const [stored, images, catalog] = await Promise.all([
+    loadStoredProductImages(rows.map((row) => text(row.id))),
+    readProductImages(),
+    loadCatalogImages(posToken ?? null, convenienceId),
+  ]);
   return rows
     .map(mapProduct)
     .filter((item) => item.convenienceId === convenienceId)
-    .map((item) => ({ ...item, imageUrl: item.imageUrl || images[item.id] || null }));
+    .map((item) => ({
+      ...item,
+      imageUrl:
+        item.imageUrl ||
+        stored[item.id] ||
+        catalog.byId[item.id] ||
+        catalog.byName[item.name.trim().toLowerCase()] ||
+        images[item.id] ||
+        null,
+    }));
 }
 
 function productIdFromSave(raw: unknown): string {

@@ -15,12 +15,14 @@ import { SiteFooter } from '@/components/SiteFooter';
 import { Wordmark } from '@/components/Wordmark';
 import { colors } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
+import { fetchProducerFirstName } from '@/lib/producer';
 import { useProducer } from '@/lib/producer-context';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { user, loading, signOut } = useAuth();
   const { status, loading: producerLoading } = useProducer();
+  const [producerName, setProducerName] = useState('');
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
@@ -56,6 +58,17 @@ export default function HomeScreen() {
   }, [loading, producerLoading, router, status, user]);
 
   useEffect(() => {
+    if (!user?.id || status !== 'producer') return;
+    let alive = true;
+    void fetchProducerFirstName(user.id).then((name) => {
+      if (alive) setProducerName(name);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [status, user?.id]);
+
+  useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
     };
@@ -87,7 +100,7 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
-      <Text style={styles.hello}>Olá{user.name ? `, ${user.name.split(' ')[0]}` : ''}</Text>
+      <Text style={styles.hello}>Olá{producerName ? `, ${producerName}` : ''}</Text>
       <View style={styles.leadRow}>
         <Text style={styles.lead}>Terminal PDV</Text>
         <Pressable

@@ -56,12 +56,12 @@ function tap(style: StyleProp<ViewStyle>) {
   return ({ pressed }: PressableStateCallbackType) => [style, pressed && styles.tap];
 }
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'cashier', label: 'Caixas' },
-  { key: 'cashless', label: 'Cashless' },
-  { key: 'devices', label: 'Maquininhas' },
-  { key: 'items', label: 'Meus itens' },
-  { key: 'sales', label: 'Vendas POS' },
+const TABS: { key: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'cashier', label: 'Caixas', icon: 'cash-outline' },
+  { key: 'cashless', label: 'Cashless', icon: 'card-outline' },
+  { key: 'devices', label: 'Maquininhas', icon: 'phone-portrait-outline' },
+  { key: 'items', label: 'Meus itens', icon: 'cube-outline' },
+  { key: 'sales', label: 'Vendas POS', icon: 'receipt-outline' },
 ];
 
 export function PdvSection({
@@ -413,17 +413,21 @@ function PdvDetail({
         style={styles.subTabs}
         contentContainerStyle={styles.subTabsInner}
       >
-        {TABS.map((item) => (
-          <Pressable
-            key={item.key}
-            onPress={() => setTab(item.key)}
-            style={tap([styles.subTab, tab === item.key && styles.subTabOn])}
-          >
-            <Text style={[styles.subTabText, tab === item.key && styles.subTabTextOn]} numberOfLines={1}>
-              {item.label}
-            </Text>
-          </Pressable>
-        ))}
+        {TABS.map((item) => {
+          const active = tab === item.key;
+          return (
+            <Pressable key={item.key} onPress={() => setTab(item.key)} style={tap(styles.subTab)}>
+              <Ionicons
+                name={item.icon}
+                size={22}
+                color={active ? colors.blue : 'rgba(255,255,255,0.72)'}
+              />
+              <Text style={[styles.subTabText, active && styles.subTabTextOn]} numberOfLines={2}>
+                {item.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </ScrollView>
 
       {tab === 'devices' ? (
@@ -431,7 +435,14 @@ function PdvDetail({
       ) : null}
       {tab === 'sales' ? <SalesPane convenienceId={convenience.id} nonce={nonce} /> : null}
       {tab === 'cashier' ? <CashierPane convenienceId={convenience.id} nonce={nonce} /> : null}
-      {tab === 'items' ? <ItemsPane convenienceId={convenience.id} nonce={nonce} onToast={onToast} /> : null}
+      {tab === 'items' ? (
+        <ItemsPane
+          convenienceId={convenience.id}
+          posToken={convenience.token}
+          nonce={nonce}
+          onToast={onToast}
+        />
+      ) : null}
       {tab === 'cashless' ? (
         <CashlessPane convenienceId={convenience.id} nonce={nonce} onToast={onToast} />
       ) : null}
@@ -1092,10 +1103,12 @@ function CashierPane({ convenienceId, nonce }: { convenienceId: string; nonce: n
 
 function ItemsPane({
   convenienceId,
+  posToken,
   nonce,
   onToast,
 }: {
   convenienceId: string;
+  posToken: string | null;
   nonce: number;
   onToast: (message: string) => void;
 }) {
@@ -1115,13 +1128,13 @@ function ItemsPane({
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      setItems(await fetchProducts(convenienceId));
+      setItems(await fetchProducts(convenienceId, posToken));
     } catch (caught) {
       onToast(caught instanceof Error ? caught.message : 'Falha ao carregar itens');
     } finally {
       setBusy(false);
     }
-  }, [convenienceId, onToast]);
+  }, [convenienceId, onToast, posToken]);
 
   useEffect(() => {
     void load();
@@ -2116,25 +2129,32 @@ const styles = StyleSheet.create({
   tokenMini: { color: colors.blue, fontSize: 13, fontWeight: '700', letterSpacing: 1 },
   subTabs: {
     flexGrow: 0,
+    marginTop: 8,
+    marginBottom: 6,
     marginHorizontal: -16,
   },
   subTabsInner: {
     flexDirection: 'row',
-    gap: 6,
-    paddingHorizontal: 16,
+    alignItems: 'flex-start',
+    gap: 4,
+    paddingHorizontal: 12,
   },
   subTab: {
-    paddingHorizontal: 12,
-    height: 36,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    width: 76,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    gap: 6,
+    paddingVertical: 2,
     flexShrink: 0,
   },
-  subTabOn: { backgroundColor: colors.blue },
-  subTabText: { color: colors.muted, fontSize: 11, fontWeight: '700' },
-  subTabTextOn: { color: colors.loginText },
+  subTabText: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  subTabTextOn: { color: colors.blue },
   hit: {
     flexDirection: 'row',
     alignItems: 'center',
