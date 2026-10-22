@@ -1,8 +1,10 @@
 import { DarkTheme, ThemeProvider, type ErrorBoundaryProps, Stack } from 'expo-router';
+import { NavigationBar } from 'expo-navigation-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppBackground, appBackground } from '@/components/AppBackground';
 import { colors } from '@/constants/theme';
@@ -44,11 +46,14 @@ const navTheme = {
 };
 
 export default function RootLayout() {
+  const insets = useSafeAreaInsets();
+
   return (
     <ThemeProvider value={navTheme}>
       <AuthProvider>
         <ProducerProvider>
           <StatusBar style="light" />
+          {Platform.OS === 'android' ? <NavigationBar style="light" /> : null}
           <AppBackground source={appBackground}>
           <Stack
             initialRouteName="index"
@@ -57,12 +62,15 @@ export default function RootLayout() {
               contentStyle: { backgroundColor: 'transparent' },
             }}
           >
-            <Stack.Screen name="index" />
-            <Stack.Screen name="login" />
-            <Stack.Screen name="cadastro" />
-            <Stack.Screen name="acesso" />
-            <Stack.Screen name="home" />
+            <Stack.Screen name="index" options={{ animation: 'none' }} />
+            <Stack.Screen name="login" options={{ animation: 'fade', animationDuration: 550 }} />
+            <Stack.Screen name="cadastro" options={{ animation: 'fade', animationDuration: 550 }} />
+            <Stack.Screen name="acesso" options={{ animation: 'fade', animationDuration: 550 }} />
+            <Stack.Screen name="home" options={{ animation: 'fade', animationDuration: 550 }} />
           </Stack>
+          {Platform.OS === 'android' && insets.bottom > 0 ? (
+            <View pointerEvents="none" style={[styles.navScrim, { height: insets.bottom }]} />
+          ) : null}
           </AppBackground>
         </ProducerProvider>
       </AuthProvider>
@@ -71,6 +79,14 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
+  navScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000000',
+    zIndex: 40,
+  },
   errorScreen: {
     flex: 1,
     backgroundColor: colors.bg,

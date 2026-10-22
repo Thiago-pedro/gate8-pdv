@@ -1,27 +1,30 @@
 import { useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Dimensions, Image, StyleSheet, View } from 'react-native';
 
 import { useAuth } from '@/lib/auth-context';
 import { useProducer } from '@/lib/producer-context';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('screen');
+const HOLD_MS = 1100;
 
 export default function SplashIndex() {
   const router = useRouter();
   const { user, loading } = useAuth();
   const { status, loading: producerLoading } = useProducer();
+  const leaving = useRef(false);
 
   useEffect(() => {
-    if (loading || producerLoading) return;
+    if (loading || producerLoading || leaving.current) return;
     const timer = setTimeout(() => {
+      leaving.current = true;
       if (!user) {
         router.replace('/login');
         return;
       }
       router.replace(status === 'producer' ? '/home' : '/acesso');
-    }, 1600);
+    }, HOLD_MS);
     return () => clearTimeout(timer);
   }, [loading, producerLoading, router, status, user]);
 
